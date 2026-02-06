@@ -27,11 +27,20 @@ public:
 private:
 	void OnPackageSaved(const FString& PackageFileName, UPackage* Package, FObjectPostSaveContext ObjectSaveContext);
 
-	/** Ticker callback — waits for asset registry, then runs the stale check once. */
+	/** Delete the audit JSON when a Blueprint asset is removed from the project. */
+	void OnAssetRemoved(const FAssetData& AssetData);
+
+	/** Delete the old-path audit JSON when a Blueprint asset is renamed or moved. */
+	void OnAssetRenamed(const FAssetData& AssetData, const FString& OldObjectPath);
+
+	/** Ticker callback: waits for asset registry, then runs the stale check once. */
 	bool OnStaleCheckTick(float DeltaTime);
 
 	/** Iterate all project Blueprints and re-audit any whose .uasset hash differs from the stored JSON hash. */
 	void AuditStaleBlueprints();
+
+	/** Walk the audit directory and delete JSON files whose source .uasset no longer exists. */
+	void SweepOrphanedAuditFiles();
 
 	FTSTicker::FDelegateHandle StaleCheckTickerHandle;
 };

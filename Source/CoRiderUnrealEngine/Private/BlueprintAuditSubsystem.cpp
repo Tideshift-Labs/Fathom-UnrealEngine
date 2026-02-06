@@ -4,7 +4,9 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Dom/JsonObject.h"
 #include "Engine/Blueprint.h"
+#include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
+#include "Misc/PackageName.h"
 #include "Serialization/JsonSerializer.h"
 #include "UObject/ObjectSaveContext.h"
 #include "UObject/UObjectIterator.h"
@@ -15,11 +17,15 @@ void UBlueprintAuditSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 	UPackage::PackageSavedWithContextEvent.AddUObject(this, &UBlueprintAuditSubsystem::OnPackageSaved);
 
+	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	AssetRegistry.OnAssetRemoved().AddUObject(this, &UBlueprintAuditSubsystem::OnAssetRemoved);
+	AssetRegistry.OnAssetRenamed().AddUObject(this, &UBlueprintAuditSubsystem::OnAssetRenamed);
+
 	// Schedule a deferred stale-check for after the asset registry finishes loading
 	StaleCheckTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
 		FTickerDelegate::CreateUObject(this, &UBlueprintAuditSubsystem::OnStaleCheckTick));
 
-	UE_LOG(LogCoRider, Display, TEXT("CoRider: Subsystem initialized — watching for Blueprint saves."));
+	UE_LOG(LogCoRider, Display, TEXT("CoRider: Subsystem initialized, watching for Blueprint saves."));
 }
 
 void UBlueprintAuditSubsystem::Deinitialize()
@@ -31,6 +37,13 @@ void UBlueprintAuditSubsystem::Deinitialize()
 	}
 
 	UPackage::PackageSavedWithContextEvent.RemoveAll(this);
+
+	if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
+	{
+		IAssetRegistry& AssetRegistry = FModuleManager::GetModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+		AssetRegistry.OnAssetRemoved().RemoveAll(this);
+		AssetRegistry.OnAssetRenamed().RemoveAll(this);
+	}
 
 	UE_LOG(LogCoRider, Log, TEXT("CoRider: Subsystem deinitialized."));
 
@@ -68,6 +81,40 @@ void UBlueprintAuditSubsystem::OnPackageSaved(const FString& PackageFileName, UP
 		}
 		return true; // continue iteration
 	});
+}
+
+void UBlueprintAuditSubsystem::OnAssetRemoved(const FAssetData& AssetData)
+{
+	const FString PackageName = AssetData.PackageName.ToString();
+	if (!PackageName.StartsWith(TEXT("/Game/")))
+	{
+		return;
+	}
+
+	if (!AssetData.IsInstanceOf(UBlueprint::StaticClass()))
+	{
+		return;
+	}
+
+	const FString JsonPath = FBlueprintAuditor::GetAuditOutputPath(PackageName);
+	FBlueprintAuditor::DeleteAuditJson(JsonPath);
+}
+
+void UBlueprintAuditSubsystem::OnAssetRenamed(const FAssetData& AssetData, const FString& OldObjectPath)
+{
+	if (!AssetData.IsInstanceOf(UBlueprint::StaticClass()))
+	{
+		return;
+	}
+
+	const FString OldPackageName = FPackageName::ObjectPathToPackageName(OldObjectPath);
+	if (!OldPackageName.StartsWith(TEXT("/Game/")))
+	{
+		return;
+	}
+
+	const FString OldJsonPath = FBlueprintAuditor::GetAuditOutputPath(OldPackageName);
+	FBlueprintAuditor::DeleteAuditJson(OldJsonPath);
 }
 
 bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
@@ -168,6 +215,66 @@ void UBlueprintAuditSubsystem::AuditStaleBlueprints()
 	}
 
 	const double Elapsed = FPlatformTime::Seconds() - StartTime;
-	UE_LOG(LogCoRider, Display, TEXT("CoRider: Stale check complete — %d scanned, %d up-to-date, %d re-audited, %d failed in %.2fs"),
+	UE_LOG(LogCoRider, Display, TEXT("CoRider: Stale check complete: %d scanned, %d up-to-date, %d re-audited, %d failed in %.2fs"),
 		TotalScanned, UpToDateCount, ReAuditedCount, FailedCount, Elapsed);
+
+	SweepOrphanedAuditFiles();
+}
+
+void UBlueprintAuditSubsystem::SweepOrphanedAuditFiles()
+{
+	const FString BaseDir = FBlueprintAuditor::GetAuditBaseDir();
+
+	TArray<FString> JsonFiles;
+	IFileManager::Get().FindFilesRecursive(JsonFiles, *BaseDir, TEXT("*.json"), true, false);
+
+	if (JsonFiles.IsEmpty())
+	{
+		return;
+	}
+
+	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+
+	int32 SweptCount = 0;
+	for (const FString& JsonFile : JsonFiles)
+	{
+		// Convert absolute path back to a package name:
+		// Strip the base dir prefix and .json suffix, then prepend /Game/
+		FString RelPath = JsonFile;
+		if (!RelPath.StartsWith(BaseDir))
+		{
+			continue;
+		}
+		RelPath.RightChopInline(BaseDir.Len());
+
+		// Remove leading separator if present
+		if (RelPath.StartsWith(TEXT("/")) || RelPath.StartsWith(TEXT("\\")))
+		{
+			RelPath.RightChopInline(1);
+		}
+
+		// Remove .json suffix
+		if (RelPath.EndsWith(TEXT(".json")))
+		{
+			RelPath.LeftChopInline(5);
+		}
+
+		// Normalize separators for the package path
+		RelPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+
+		const FString PackageName = TEXT("/Game/") + RelPath;
+
+		TArray<FAssetData> Assets;
+		AssetRegistry.GetAssetsByPackageName(FName(*PackageName), Assets, true);
+		if (Assets.IsEmpty())
+		{
+			FBlueprintAuditor::DeleteAuditJson(JsonFile);
+			++SweptCount;
+		}
+	}
+
+	if (SweptCount > 0)
+	{
+		UE_LOG(LogCoRider, Display, TEXT("CoRider: Swept %d orphaned audit file(s)"), SweptCount);
+	}
 }

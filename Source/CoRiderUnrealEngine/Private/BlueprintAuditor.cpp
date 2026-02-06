@@ -312,6 +312,12 @@ FString FBlueprintAuditor::GetAuditOutputPath(const UBlueprint* BP)
 	return GetAuditOutputPath(BP->GetOutermost()->GetName());
 }
 
+FString FBlueprintAuditor::GetAuditBaseDir()
+{
+	const FString VersionDir = FString::Printf(TEXT("v%d"), AuditSchemaVersion);
+	return FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("Saved") / TEXT("Audit") / VersionDir / TEXT("Blueprints"));
+}
+
 FString FBlueprintAuditor::GetAuditOutputPath(const FString& PackageName)
 {
 	// Convert package path like /Game/UI/Widgets/WBP_Foo to relative path UI/Widgets/WBP_Foo
@@ -323,9 +329,25 @@ FString FBlueprintAuditor::GetAuditOutputPath(const FString& PackageName)
 		RelativePath.RightChopInline(GamePrefix.Len());
 	}
 
-	// Build: <ProjectDir>/Saved/Audit/v<N>/Blueprints/<relative_path>.json
-	const FString VersionDir = FString::Printf(TEXT("v%d"), AuditSchemaVersion);
-	return FPaths::ProjectDir() / TEXT("Saved") / TEXT("Audit") / VersionDir / TEXT("Blueprints") / RelativePath + TEXT(".json");
+	return GetAuditBaseDir() / RelativePath + TEXT(".json");
+}
+
+bool FBlueprintAuditor::DeleteAuditJson(const FString& JsonPath)
+{
+	IFileManager& FM = IFileManager::Get();
+	if (!FM.FileExists(*JsonPath))
+	{
+		return true;
+	}
+
+	if (FM.Delete(*JsonPath))
+	{
+		UE_LOG(LogCoRider, Display, TEXT("CoRider: Deleted audit JSON %s"), *JsonPath);
+		return true;
+	}
+
+	UE_LOG(LogCoRider, Warning, TEXT("CoRider: Failed to delete audit JSON %s"), *JsonPath);
+	return false;
 }
 
 FString FBlueprintAuditor::GetSourceFilePath(const FString& PackageName)

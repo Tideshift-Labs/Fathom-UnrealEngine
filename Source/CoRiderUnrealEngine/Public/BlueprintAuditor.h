@@ -30,12 +30,18 @@ struct CORIDERUNREALENGINE_API FBlueprintAuditor
 	/** Human-readable type string for a Blueprint variable pin type. */
 	static FString GetVariableTypeString(const FEdGraphPinType& PinType);
 
+	/** Return the base directory for all audit JSON files: <ProjectDir>/Saved/Audit/v<N>/Blueprints */
+	static FString GetAuditBaseDir();
+
 	/**
 	 * Compute the on-disk output path for a Blueprint's audit JSON.
-	 * e.g. /Game/UI/Widgets/WBP_Foo  ->  <ProjectDir>/Saved/Audit/Blueprints/UI/Widgets/WBP_Foo.json
+	 * e.g. /Game/UI/Widgets/WBP_Foo  ->  <ProjectDir>/Saved/Audit/v<N>/Blueprints/UI/Widgets/WBP_Foo.json
 	 */
 	static FString GetAuditOutputPath(const UBlueprint* BP);
 	static FString GetAuditOutputPath(const FString& PackageName);
+
+	/** Delete an audit JSON file. Returns true if the file was deleted or did not exist. */
+	static bool DeleteAuditJson(const FString& JsonPath);
 
 	/**
 	 * Convert a package name (e.g. /Game/UI/WBP_Foo) to its .uasset file path on disk.
