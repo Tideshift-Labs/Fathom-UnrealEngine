@@ -13,7 +13,7 @@ DECLARE_LOG_CATEGORY_EXTERN(LogBlueprintAudit, Log, All);
  * Shared utility for auditing Blueprint assets.
  * Used by both BlueprintAuditCommandlet (batch) and BlueprintAuditSubsystem (on-save).
  */
-struct UNREALBLUEPRINTAUDIT_API FBlueprintAuditor
+struct CORIDERUNREALENGINE_API FBlueprintAuditor
 {
 	/** Produce a JSON object summarizing the given Blueprint. */
 	static TSharedPtr<FJsonObject> AuditBlueprint(const UBlueprint* BP);

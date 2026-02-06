@@ -1,4 +1,4 @@
-# Unreal Blueprint Audit
+# CoRider-UnrealEngine
 
 An Unreal Engine editor plugin that exports Blueprint asset summaries to JSON for external analysis, diffing, and LLM integration.
 
@@ -18,12 +18,12 @@ Create a symbolic link from your project's Plugins folder:
 
 ```powershell
 # From your UE project directory
-New-Item -ItemType SymbolicLink -Path "Plugins\UnrealBlueprintAudit" -Target "path\to\UnrealBlueprintAudit"
+New-Item -ItemType SymbolicLink -Path "Plugins\CoRiderUnrealEngine" -Target "path\to\CoRiderUnrealEngine"
 ```
 
 ### Option 2: Copy
 
-Copy the `UnrealBlueprintAudit` folder to your project's `Plugins` directory.
+Copy the `CoRiderUnrealEngine` folder to your project's `Plugins` directory.
 
 ## Usage
 
@@ -108,7 +108,7 @@ When the editor is running, the `UBlueprintAuditSubsystem` automatically re-audi
 
 ## Integration with Rider Plugin
 
-This plugin is designed to work with the companion Rider plugin (`RiderActionExplorer`). The Rider plugin:
+This plugin is designed to work with the companion Rider plugin (`CoRider`). The Rider plugin:
 
 1. Detects when audit data is stale by comparing `SourceFileHash` with current file hashes
 2. Automatically triggers the commandlet to refresh stale data

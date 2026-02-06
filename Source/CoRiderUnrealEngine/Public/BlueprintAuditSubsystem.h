@@ -15,7 +15,7 @@
  * missing entries are re-audited automatically.
  */
 UCLASS()
-class UNREALBLUEPRINTAUDIT_API UBlueprintAuditSubsystem : public UEditorSubsystem
+class CORIDERUNREALENGINE_API UBlueprintAuditSubsystem : public UEditorSubsystem
 {
 	GENERATED_BODY()
 

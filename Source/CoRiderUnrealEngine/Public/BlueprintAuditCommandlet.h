@@ -17,7 +17,7 @@
  * (defaults to <ProjectDir>/BlueprintAudit.json).
  */
 UCLASS()
-class UNREALBLUEPRINTAUDIT_API UBlueprintAuditCommandlet : public UCommandlet
+class CORIDERUNREALENGINE_API UBlueprintAuditCommandlet : public UCommandlet
 {
 	GENERATED_BODY()
 

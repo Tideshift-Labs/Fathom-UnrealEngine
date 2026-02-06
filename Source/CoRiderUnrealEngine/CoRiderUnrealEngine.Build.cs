@@ -1,8 +1,8 @@
 using UnrealBuildTool;
 
-public class UnrealBlueprintAudit : ModuleRules
+public class CoRiderUnrealEngine : ModuleRules
 {
-	public UnrealBlueprintAudit(ReadOnlyTargetRules Target) : base(Target)
+	public CoRiderUnrealEngine(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 

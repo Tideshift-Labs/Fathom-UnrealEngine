@@ -3,7 +3,7 @@
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
 
-class FUnrealBlueprintAuditModule : public IModuleInterface
+class FCoRiderUnrealEngineModule : public IModuleInterface
 {
 public:
 	virtual void StartupModule() override;
