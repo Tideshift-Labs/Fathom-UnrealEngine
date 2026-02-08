@@ -18,6 +18,7 @@ public class CoRiderUnrealEngine : ModuleRules
 			"AssetRegistry",
 			"BlueprintGraph",
 			"EditorSubsystem",
+			"HTTPServer",
 			"Json",
 			"Slate",
 			"SlateCore",
