@@ -228,4 +228,4 @@ This plugin works with the companion [CoRider](https://github.com/kvirani/CoRide
 
 ## License
 
-[TBD]
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
