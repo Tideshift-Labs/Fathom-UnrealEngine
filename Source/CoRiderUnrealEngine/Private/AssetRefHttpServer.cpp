@@ -278,6 +278,15 @@ bool FAssetRefHttpServer::HandleAssetQuery(const FHttpServerRequest& Request, co
 		Entry->SetStringField(TEXT("package"), Dep.AssetId.PackageName.ToString());
 		Entry->SetStringField(TEXT("category"), GetDependencyCategoryString(Dep.Category));
 		Entry->SetStringField(TEXT("type"), GetDependencyTypeString(Dep.Properties));
+
+		// Look up asset class from registry (e.g. "Texture2D", "WidgetBlueprint")
+		TArray<FAssetData> DepAssets;
+		Registry.GetAssetsByPackageName(Dep.AssetId.PackageName, DepAssets, true);
+		if (!DepAssets.IsEmpty())
+		{
+			Entry->SetStringField(TEXT("assetClass"), DepAssets[0].AssetClassPath.GetAssetName().ToString());
+		}
+
 		EntriesArray.Add(MakeShared<FJsonValueObject>(Entry));
 	}
 
