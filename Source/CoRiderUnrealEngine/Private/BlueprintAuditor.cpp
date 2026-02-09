@@ -27,47 +27,44 @@
 
 DEFINE_LOG_CATEGORY(LogCoRider);
 
-TSharedPtr<FJsonObject> FBlueprintAuditor::AuditBlueprint(const UBlueprint* BP)
+// ============================================================================
+// Game-thread gather functions (read UObject pointers, populate POD structs)
+// ============================================================================
+
+FBlueprintAuditData FBlueprintAuditor::GatherBlueprintData(const UBlueprint* BP)
 {
-	TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject());
+	FBlueprintAuditData Data;
 
 	// --- Metadata ---
-	Result->SetStringField(TEXT("Name"), BP->GetName());
-	Result->SetStringField(TEXT("Path"), BP->GetPathName());
-	Result->SetStringField(TEXT("ParentClass"),
-		BP->ParentClass ? BP->ParentClass->GetPathName() : TEXT("None"));
-	Result->SetStringField(TEXT("BlueprintType"),
-		StaticEnum<EBlueprintType>()->GetNameStringByValue(static_cast<int64>(BP->BlueprintType)));
+	Data.Name = BP->GetName();
+	Data.Path = BP->GetPathName();
+	Data.PackageName = BP->GetOutermost()->GetName();
+	Data.ParentClass = BP->ParentClass ? BP->ParentClass->GetPathName() : TEXT("None");
+	Data.BlueprintType = StaticEnum<EBlueprintType>()->GetNameStringByValue(static_cast<int64>(BP->BlueprintType));
 
-	// --- Source file hash (for stale detection) ---
-	const FString SourcePath = GetSourceFilePath(BP->GetOutermost()->GetName());
-	if (!SourcePath.IsEmpty())
-	{
-		Result->SetStringField(TEXT("SourceFileHash"), ComputeFileHash(SourcePath));
-	}
+	// Store the source file path so the hash can be computed on a background thread
+	Data.SourceFilePath = GetSourceFilePath(Data.PackageName);
+	Data.OutputPath = GetAuditOutputPath(Data.PackageName);
 
-	UE_LOG(LogCoRider, Verbose, TEXT("CoRider: Auditing %s (Parent: %s)"),
-		*BP->GetName(), BP->ParentClass ? *BP->ParentClass->GetName() : TEXT("None"));
+	UE_LOG(LogCoRider, Verbose, TEXT("CoRider: Gathering data for %s (Parent: %s)"),
+		*Data.Name, BP->ParentClass ? *BP->ParentClass->GetName() : TEXT("None"));
 
 	// --- Variables ---
-	TArray<TSharedPtr<FJsonValue>> VariablesArray;
+	Data.Variables.Reserve(BP->NewVariables.Num());
 	for (const FBPVariableDescription& Var : BP->NewVariables)
 	{
-		TSharedPtr<FJsonObject> VarObj = MakeShareable(new FJsonObject());
-		VarObj->SetStringField(TEXT("Name"), Var.VarName.ToString());
-		VarObj->SetStringField(TEXT("Type"), GetVariableTypeString(Var.VarType));
-		VarObj->SetStringField(TEXT("Category"), Var.Category.ToString());
-		VarObj->SetBoolField(TEXT("InstanceEditable"),
+		FVariableAuditData VarData;
+		VarData.Name = Var.VarName.ToString();
+		VarData.Type = GetVariableTypeString(Var.VarType);
+		VarData.Category = Var.Category.ToString();
+		VarData.bInstanceEditable =
 			Var.HasMetaData(FBlueprintMetadata::MD_Private) == false &&
-			Var.PropertyFlags & CPF_Edit);
-		VarObj->SetBoolField(TEXT("Replicated"),
-			(Var.PropertyFlags & CPF_Net) != 0);
-		VariablesArray.Add(MakeShareable(new FJsonValueObject(VarObj)));
+			(Var.PropertyFlags & CPF_Edit) != 0;
+		VarData.bReplicated = (Var.PropertyFlags & CPF_Net) != 0;
+		Data.Variables.Add(MoveTemp(VarData));
 	}
-	Result->SetArrayField(TEXT("Variables"), VariablesArray);
 
 	// --- Property Overrides (CDO Diff) ---
-	TArray<TSharedPtr<FJsonValue>> OverridesArray;
 	if (UClass* GeneratedClass = BP->GeneratedClass)
 	{
 		if (UClass* SuperClass = GeneratedClass->GetSuperClass())
@@ -79,21 +76,16 @@ TSharedPtr<FJsonObject> FBlueprintAuditor::AuditBlueprint(const UBlueprint* BP)
 			{
 				const FProperty* Prop = *PropIt;
 
-				// Skip properties defined in this Blueprint (we only care about inherited property overrides)
-				// Accessing a child-only property on the SuperCDO will crash.
 				if (Prop->GetOwner<UClass>() == GeneratedClass)
 				{
 					continue;
 				}
 
-				// Skip properties that aren't editable or config-related
-				// (We want to capture what the user changed in the Details panel)
 				if (!Prop->HasAnyPropertyFlags(CPF_Edit | CPF_Config | CPF_DisableEditOnInstance))
 				{
 					continue;
 				}
 
-				// Skip Transient properties
 				if (Prop->HasAnyPropertyFlags(CPF_Transient))
 				{
 					continue;
@@ -104,154 +96,127 @@ TSharedPtr<FJsonObject> FBlueprintAuditor::AuditBlueprint(const UBlueprint* BP)
 
 				if (!Prop->Identical(ValuePtr, SuperValuePtr))
 				{
-					TSharedPtr<FJsonObject> OverrideObj = MakeShareable(new FJsonObject());
-					OverrideObj->SetStringField(TEXT("Name"), Prop->GetName());
-
-					FString ValueStr;
-					// Use ExportText_InContainer to avoid manual value pointer handling issues
-					// Index 0, Container=CDO, Default=nullptr (force full export), Parent=nullptr, Flags=0
-					Prop->ExportText_InContainer(0, ValueStr, CDO, nullptr, nullptr, 0);
-					OverrideObj->SetStringField(TEXT("Value"), ValueStr);
-
-					OverridesArray.Add(MakeShareable(new FJsonValueObject(OverrideObj)));
+					FPropertyOverrideData Override;
+					Override.Name = Prop->GetName();
+					Prop->ExportText_InContainer(0, Override.Value, CDO, nullptr, nullptr, 0);
+					Data.PropertyOverrides.Add(MoveTemp(Override));
 				}
 			}
 		}
 	}
-	Result->SetArrayField(TEXT("PropertyOverrides"), OverridesArray);
 
 	// --- Interfaces ---
-	TArray<TSharedPtr<FJsonValue>> InterfacesArray;
 	for (const FBPInterfaceDescription& Interface : BP->ImplementedInterfaces)
 	{
 		if (Interface.Interface)
 		{
-			InterfacesArray.Add(MakeShareable(new FJsonValueString(Interface.Interface->GetName())));
+			Data.Interfaces.Add(Interface.Interface->GetName());
 		}
 	}
-	Result->SetArrayField(TEXT("Interfaces"), InterfacesArray);
 
 	// --- Components (Actor-based BPs) ---
-	TArray<TSharedPtr<FJsonValue>> ComponentsArray;
 	if (BP->SimpleConstructionScript)
 	{
 		for (const USCS_Node* Node : BP->SimpleConstructionScript->GetAllNodes())
 		{
 			if (Node && Node->ComponentClass)
 			{
-				TSharedPtr<FJsonObject> CompObj = MakeShareable(new FJsonObject());
-				CompObj->SetStringField(TEXT("Name"), Node->GetVariableName().ToString());
-				CompObj->SetStringField(TEXT("Class"), Node->ComponentClass->GetName());
-				ComponentsArray.Add(MakeShareable(new FJsonValueObject(CompObj)));
+				FComponentAuditData CompData;
+				CompData.Name = Node->GetVariableName().ToString();
+				CompData.Class = Node->ComponentClass->GetName();
+				Data.Components.Add(MoveTemp(CompData));
 			}
 		}
 	}
-	Result->SetArrayField(TEXT("Components"), ComponentsArray);
 
 	// --- Timelines ---
-	TArray<TSharedPtr<FJsonValue>> TimelinesArray;
 	for (const UTimelineTemplate* Timeline : BP->Timelines)
 	{
 		if (!Timeline) continue;
 
-		TSharedPtr<FJsonObject> TLObj = MakeShareable(new FJsonObject());
-		TLObj->SetStringField(TEXT("Name"), Timeline->GetName());
-		TLObj->SetNumberField(TEXT("Length"), Timeline->TimelineLength);
-		TLObj->SetBoolField(TEXT("Looping"), Timeline->bLoop);
-		TLObj->SetBoolField(TEXT("AutoPlay"), Timeline->bAutoPlay);
-		TLObj->SetNumberField(TEXT("FloatTrackCount"), Timeline->FloatTracks.Num());
-		TLObj->SetNumberField(TEXT("VectorTrackCount"), Timeline->VectorTracks.Num());
-		TLObj->SetNumberField(TEXT("LinearColorTrackCount"), Timeline->LinearColorTracks.Num());
-		TLObj->SetNumberField(TEXT("EventTrackCount"), Timeline->EventTracks.Num());
-		TimelinesArray.Add(MakeShareable(new FJsonValueObject(TLObj)));
+		FTimelineAuditData TLData;
+		TLData.Name = Timeline->GetName();
+		TLData.Length = Timeline->TimelineLength;
+		TLData.bLooping = Timeline->bLoop;
+		TLData.bAutoPlay = Timeline->bAutoPlay;
+		TLData.FloatTrackCount = Timeline->FloatTracks.Num();
+		TLData.VectorTrackCount = Timeline->VectorTracks.Num();
+		TLData.LinearColorTrackCount = Timeline->LinearColorTracks.Num();
+		TLData.EventTrackCount = Timeline->EventTracks.Num();
+		Data.Timelines.Add(MoveTemp(TLData));
 	}
-	Result->SetArrayField(TEXT("Timelines"), TimelinesArray);
 
 	// --- Widget Tree (Widget Blueprints) ---
 	if (const UWidgetBlueprint* WidgetBP = Cast<UWidgetBlueprint>(BP))
 	{
 		if (WidgetBP->WidgetTree && WidgetBP->WidgetTree->RootWidget)
 		{
-			Result->SetObjectField(TEXT("WidgetTree"), AuditWidget(WidgetBP->WidgetTree->RootWidget));
+			Data.WidgetTree = GatherWidgetData(WidgetBP->WidgetTree->RootWidget);
 		}
 	}
 
 	// --- Event Graphs (UbergraphPages) ---
-	TArray<TSharedPtr<FJsonValue>> EventGraphs;
+	Data.EventGraphs.Reserve(BP->UbergraphPages.Num());
 	for (UEdGraph* Graph : BP->UbergraphPages)
 	{
-		EventGraphs.Add(MakeShareable(new FJsonValueObject(AuditGraph(Graph))));
+		Data.EventGraphs.Add(GatherGraphData(Graph));
 	}
-	Result->SetArrayField(TEXT("EventGraphs"), EventGraphs);
 
 	// --- Function Graphs ---
-	TArray<TSharedPtr<FJsonValue>> FunctionGraphs;
+	Data.FunctionGraphs.Reserve(BP->FunctionGraphs.Num());
 	for (UEdGraph* Graph : BP->FunctionGraphs)
 	{
-		FunctionGraphs.Add(MakeShareable(new FJsonValueObject(AuditGraph(Graph))));
+		Data.FunctionGraphs.Add(GatherGraphData(Graph));
 	}
-	Result->SetArrayField(TEXT("FunctionGraphs"), FunctionGraphs);
 
 	// --- Macro Graphs ---
-	TArray<TSharedPtr<FJsonValue>> MacroGraphs;
+	Data.MacroGraphs.Reserve(BP->MacroGraphs.Num());
 	for (UEdGraph* Graph : BP->MacroGraphs)
 	{
-		TSharedPtr<FJsonObject> MacroObj = MakeShareable(new FJsonObject());
-		MacroObj->SetStringField(TEXT("Name"), Graph->GetName());
-		MacroObj->SetNumberField(TEXT("NodeCount"), Graph->Nodes.Num());
-		MacroGraphs.Add(MakeShareable(new FJsonValueObject(MacroObj)));
+		FMacroGraphAuditData MacroData;
+		MacroData.Name = Graph->GetName();
+		MacroData.NodeCount = Graph->Nodes.Num();
+		Data.MacroGraphs.Add(MoveTemp(MacroData));
 	}
-	Result->SetArrayField(TEXT("MacroGraphs"), MacroGraphs);
 
-	return Result;
+	return Data;
 }
 
-TSharedPtr<FJsonObject> FBlueprintAuditor::AuditGraph(const UEdGraph* Graph)
+FGraphAuditData FBlueprintAuditor::GatherGraphData(const UEdGraph* Graph)
 {
-	TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject());
-	Result->SetStringField(TEXT("Name"), Graph->GetName());
-	Result->SetNumberField(TEXT("TotalNodes"), Graph->Nodes.Num());
-
-	TArray<TSharedPtr<FJsonValue>> Events;
-	TArray<TSharedPtr<FJsonValue>> FunctionCalls;
-	TSet<FString> VariablesRead;
-	TSet<FString> VariablesWritten;
-	TArray<TSharedPtr<FJsonValue>> Macros;
+	FGraphAuditData Data;
+	Data.Name = Graph->GetName();
+	Data.TotalNodes = Graph->Nodes.Num();
 
 	for (UEdGraphNode* Node : Graph->Nodes)
 	{
 		// Check CustomEvent before Event (CustomEvent inherits from Event)
 		if (const UK2Node_CustomEvent* CustomEvent = Cast<UK2Node_CustomEvent>(Node))
 		{
-			Events.Add(MakeShareable(new FJsonValueString(
-				FString::Printf(TEXT("CustomEvent: %s"), *CustomEvent->CustomFunctionName.ToString()))));
+			Data.Events.Add(FString::Printf(TEXT("CustomEvent: %s"), *CustomEvent->CustomFunctionName.ToString()));
 		}
 		else if (const UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node))
 		{
-			Events.Add(MakeShareable(new FJsonValueString(
-				EventNode->GetNodeTitle(ENodeTitleType::ListView).ToString())));
+			Data.Events.Add(EventNode->GetNodeTitle(ENodeTitleType::ListView).ToString());
 		}
 		else if (const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node))
 		{
-			TSharedPtr<FJsonObject> CallObj = MakeShareable(new FJsonObject());
-			const FString FuncName = CallNode->FunctionReference.GetMemberName().ToString();
+			FCallFunctionAuditData CallData;
+			CallData.FunctionName = CallNode->FunctionReference.GetMemberName().ToString();
 
-			FString TargetClass = TEXT("Self");
+			CallData.TargetClass = TEXT("Self");
 			const UFunction* Func = CallNode->GetTargetFunction();
 			if (Func)
 			{
 				if (const UClass* OwnerClass = Func->GetOwnerClass())
 				{
-					TargetClass = OwnerClass->GetName();
+					CallData.TargetClass = OwnerClass->GetName();
 				}
 			}
 
-			CallObj->SetStringField(TEXT("Function"), FuncName);
-			CallObj->SetStringField(TEXT("Target"), TargetClass);
-			CallObj->SetBoolField(TEXT("IsNative"), Func && Func->IsNative());
+			CallData.bIsNative = Func && Func->IsNative();
 
 			// Capture hardcoded (literal) input pin values
-			TArray<TSharedPtr<FJsonValue>> DefaultInputs;
 			for (const UEdGraphPin* Pin : CallNode->Pins)
 			{
 				if (Pin->Direction != EGPD_Input) continue;
@@ -260,57 +225,303 @@ TSharedPtr<FJsonObject> FBlueprintAuditor::AuditGraph(const UEdGraph* Graph)
 				if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
 				if (Pin->PinName == UEdGraphSchema_K2::PN_Self) continue;
 
-				TSharedPtr<FJsonObject> PinObj = MakeShareable(new FJsonObject());
-				PinObj->SetStringField(TEXT("Name"), Pin->PinName.ToString());
-				PinObj->SetStringField(TEXT("Value"), Pin->DefaultValue);
-				DefaultInputs.Add(MakeShareable(new FJsonValueObject(PinObj)));
-			}
-			if (DefaultInputs.Num() > 0)
-			{
-				CallObj->SetArrayField(TEXT("DefaultInputs"), DefaultInputs);
+				FDefaultInputData InputData;
+				InputData.Name = Pin->PinName.ToString();
+				InputData.Value = Pin->DefaultValue;
+				CallData.DefaultInputs.Add(MoveTemp(InputData));
 			}
 
-			FunctionCalls.Add(MakeShareable(new FJsonValueObject(CallObj)));
+			Data.FunctionCalls.Add(MoveTemp(CallData));
 		}
 		else if (const UK2Node_VariableGet* GetNode = Cast<UK2Node_VariableGet>(Node))
 		{
-			VariablesRead.Add(GetNode->GetVarName().ToString());
+			Data.VariablesRead.Add(GetNode->GetVarName().ToString());
 		}
 		else if (const UK2Node_VariableSet* SetNode = Cast<UK2Node_VariableSet>(Node))
 		{
-			VariablesWritten.Add(SetNode->GetVarName().ToString());
+			Data.VariablesWritten.Add(SetNode->GetVarName().ToString());
 		}
 		else if (const UK2Node_MacroInstance* MacroNode = Cast<UK2Node_MacroInstance>(Node))
 		{
 			const FString MacroName = MacroNode->GetMacroGraph()
 				? MacroNode->GetMacroGraph()->GetName()
 				: TEXT("Unknown");
-			Macros.Add(MakeShareable(new FJsonValueString(MacroName)));
+			Data.MacroInstances.Add(MacroName);
 		}
 	}
 
+	return Data;
+}
+
+FWidgetAuditData FBlueprintAuditor::GatherWidgetData(UWidget* Widget)
+{
+	FWidgetAuditData Data;
+	if (!Widget)
+	{
+		return Data;
+	}
+
+	Data.Name = Widget->GetName();
+	Data.Class = Widget->GetClass()->GetName();
+	Data.bIsVariable = Widget->bIsVariable;
+
+	if (UPanelWidget* Panel = Cast<UPanelWidget>(Widget))
+	{
+		Data.Children.Reserve(Panel->GetChildrenCount());
+		for (int32 i = 0; i < Panel->GetChildrenCount(); ++i)
+		{
+			if (UWidget* Child = Panel->GetChildAt(i))
+			{
+				Data.Children.Add(GatherWidgetData(Child));
+			}
+		}
+	}
+
+	return Data;
+}
+
+// ============================================================================
+// Thread-safe serialize functions (POD structs to JSON, no UObject access)
+// ============================================================================
+
+TSharedPtr<FJsonObject> FBlueprintAuditor::SerializeToJson(const FBlueprintAuditData& Data)
+{
+	TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject());
+
+	// --- Metadata ---
+	Result->SetStringField(TEXT("Name"), Data.Name);
+	Result->SetStringField(TEXT("Path"), Data.Path);
+	Result->SetStringField(TEXT("ParentClass"), Data.ParentClass);
+	Result->SetStringField(TEXT("BlueprintType"), Data.BlueprintType);
+
+	// --- Source file hash (computed here on the background thread) ---
+	if (!Data.SourceFilePath.IsEmpty())
+	{
+		Result->SetStringField(TEXT("SourceFileHash"), ComputeFileHash(Data.SourceFilePath));
+	}
+
+	// --- Variables ---
+	TArray<TSharedPtr<FJsonValue>> VariablesArray;
+	VariablesArray.Reserve(Data.Variables.Num());
+	for (const FVariableAuditData& Var : Data.Variables)
+	{
+		TSharedPtr<FJsonObject> VarObj = MakeShareable(new FJsonObject());
+		VarObj->SetStringField(TEXT("Name"), Var.Name);
+		VarObj->SetStringField(TEXT("Type"), Var.Type);
+		VarObj->SetStringField(TEXT("Category"), Var.Category);
+		VarObj->SetBoolField(TEXT("InstanceEditable"), Var.bInstanceEditable);
+		VarObj->SetBoolField(TEXT("Replicated"), Var.bReplicated);
+		VariablesArray.Add(MakeShareable(new FJsonValueObject(VarObj)));
+	}
+	Result->SetArrayField(TEXT("Variables"), VariablesArray);
+
+	// --- Property Overrides ---
+	TArray<TSharedPtr<FJsonValue>> OverridesArray;
+	OverridesArray.Reserve(Data.PropertyOverrides.Num());
+	for (const FPropertyOverrideData& Override : Data.PropertyOverrides)
+	{
+		TSharedPtr<FJsonObject> OverrideObj = MakeShareable(new FJsonObject());
+		OverrideObj->SetStringField(TEXT("Name"), Override.Name);
+		OverrideObj->SetStringField(TEXT("Value"), Override.Value);
+		OverridesArray.Add(MakeShareable(new FJsonValueObject(OverrideObj)));
+	}
+	Result->SetArrayField(TEXT("PropertyOverrides"), OverridesArray);
+
+	// --- Interfaces ---
+	TArray<TSharedPtr<FJsonValue>> InterfacesArray;
+	InterfacesArray.Reserve(Data.Interfaces.Num());
+	for (const FString& Iface : Data.Interfaces)
+	{
+		InterfacesArray.Add(MakeShareable(new FJsonValueString(Iface)));
+	}
+	Result->SetArrayField(TEXT("Interfaces"), InterfacesArray);
+
+	// --- Components ---
+	TArray<TSharedPtr<FJsonValue>> ComponentsArray;
+	ComponentsArray.Reserve(Data.Components.Num());
+	for (const FComponentAuditData& Comp : Data.Components)
+	{
+		TSharedPtr<FJsonObject> CompObj = MakeShareable(new FJsonObject());
+		CompObj->SetStringField(TEXT("Name"), Comp.Name);
+		CompObj->SetStringField(TEXT("Class"), Comp.Class);
+		ComponentsArray.Add(MakeShareable(new FJsonValueObject(CompObj)));
+	}
+	Result->SetArrayField(TEXT("Components"), ComponentsArray);
+
+	// --- Timelines ---
+	TArray<TSharedPtr<FJsonValue>> TimelinesArray;
+	TimelinesArray.Reserve(Data.Timelines.Num());
+	for (const FTimelineAuditData& TL : Data.Timelines)
+	{
+		TSharedPtr<FJsonObject> TLObj = MakeShareable(new FJsonObject());
+		TLObj->SetStringField(TEXT("Name"), TL.Name);
+		TLObj->SetNumberField(TEXT("Length"), TL.Length);
+		TLObj->SetBoolField(TEXT("Looping"), TL.bLooping);
+		TLObj->SetBoolField(TEXT("AutoPlay"), TL.bAutoPlay);
+		TLObj->SetNumberField(TEXT("FloatTrackCount"), TL.FloatTrackCount);
+		TLObj->SetNumberField(TEXT("VectorTrackCount"), TL.VectorTrackCount);
+		TLObj->SetNumberField(TEXT("LinearColorTrackCount"), TL.LinearColorTrackCount);
+		TLObj->SetNumberField(TEXT("EventTrackCount"), TL.EventTrackCount);
+		TimelinesArray.Add(MakeShareable(new FJsonValueObject(TLObj)));
+	}
+	Result->SetArrayField(TEXT("Timelines"), TimelinesArray);
+
+	// --- Widget Tree ---
+	if (Data.WidgetTree.IsSet())
+	{
+		Result->SetObjectField(TEXT("WidgetTree"), SerializeWidgetToJson(Data.WidgetTree.GetValue()));
+	}
+
+	// --- Event Graphs ---
+	TArray<TSharedPtr<FJsonValue>> EventGraphs;
+	EventGraphs.Reserve(Data.EventGraphs.Num());
+	for (const FGraphAuditData& Graph : Data.EventGraphs)
+	{
+		EventGraphs.Add(MakeShareable(new FJsonValueObject(SerializeGraphToJson(Graph))));
+	}
+	Result->SetArrayField(TEXT("EventGraphs"), EventGraphs);
+
+	// --- Function Graphs ---
+	TArray<TSharedPtr<FJsonValue>> FunctionGraphs;
+	FunctionGraphs.Reserve(Data.FunctionGraphs.Num());
+	for (const FGraphAuditData& Graph : Data.FunctionGraphs)
+	{
+		FunctionGraphs.Add(MakeShareable(new FJsonValueObject(SerializeGraphToJson(Graph))));
+	}
+	Result->SetArrayField(TEXT("FunctionGraphs"), FunctionGraphs);
+
+	// --- Macro Graphs ---
+	TArray<TSharedPtr<FJsonValue>> MacroGraphs;
+	MacroGraphs.Reserve(Data.MacroGraphs.Num());
+	for (const FMacroGraphAuditData& Macro : Data.MacroGraphs)
+	{
+		TSharedPtr<FJsonObject> MacroObj = MakeShareable(new FJsonObject());
+		MacroObj->SetStringField(TEXT("Name"), Macro.Name);
+		MacroObj->SetNumberField(TEXT("NodeCount"), Macro.NodeCount);
+		MacroGraphs.Add(MakeShareable(new FJsonValueObject(MacroObj)));
+	}
+	Result->SetArrayField(TEXT("MacroGraphs"), MacroGraphs);
+
+	return Result;
+}
+
+TSharedPtr<FJsonObject> FBlueprintAuditor::SerializeGraphToJson(const FGraphAuditData& Data)
+{
+	TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject());
+	Result->SetStringField(TEXT("Name"), Data.Name);
+	Result->SetNumberField(TEXT("TotalNodes"), Data.TotalNodes);
+
+	// Events
+	TArray<TSharedPtr<FJsonValue>> Events;
+	Events.Reserve(Data.Events.Num());
+	for (const FString& Evt : Data.Events)
+	{
+		Events.Add(MakeShareable(new FJsonValueString(Evt)));
+	}
 	Result->SetArrayField(TEXT("Events"), Events);
+
+	// Function Calls
+	TArray<TSharedPtr<FJsonValue>> FunctionCalls;
+	FunctionCalls.Reserve(Data.FunctionCalls.Num());
+	for (const FCallFunctionAuditData& Call : Data.FunctionCalls)
+	{
+		TSharedPtr<FJsonObject> CallObj = MakeShareable(new FJsonObject());
+		CallObj->SetStringField(TEXT("Function"), Call.FunctionName);
+		CallObj->SetStringField(TEXT("Target"), Call.TargetClass);
+		CallObj->SetBoolField(TEXT("IsNative"), Call.bIsNative);
+
+		if (Call.DefaultInputs.Num() > 0)
+		{
+			TArray<TSharedPtr<FJsonValue>> DefaultInputs;
+			DefaultInputs.Reserve(Call.DefaultInputs.Num());
+			for (const FDefaultInputData& Input : Call.DefaultInputs)
+			{
+				TSharedPtr<FJsonObject> PinObj = MakeShareable(new FJsonObject());
+				PinObj->SetStringField(TEXT("Name"), Input.Name);
+				PinObj->SetStringField(TEXT("Value"), Input.Value);
+				DefaultInputs.Add(MakeShareable(new FJsonValueObject(PinObj)));
+			}
+			CallObj->SetArrayField(TEXT("DefaultInputs"), DefaultInputs);
+		}
+
+		FunctionCalls.Add(MakeShareable(new FJsonValueObject(CallObj)));
+	}
 	Result->SetArrayField(TEXT("FunctionCalls"), FunctionCalls);
 
-	// Convert TSet to JSON arrays
+	// Variables Read
 	TArray<TSharedPtr<FJsonValue>> VarsReadArr;
-	for (const FString& Var : VariablesRead)
+	VarsReadArr.Reserve(Data.VariablesRead.Num());
+	for (const FString& Var : Data.VariablesRead)
 	{
 		VarsReadArr.Add(MakeShareable(new FJsonValueString(Var)));
 	}
 	Result->SetArrayField(TEXT("VariablesRead"), VarsReadArr);
 
+	// Variables Written
 	TArray<TSharedPtr<FJsonValue>> VarsWrittenArr;
-	for (const FString& Var : VariablesWritten)
+	VarsWrittenArr.Reserve(Data.VariablesWritten.Num());
+	for (const FString& Var : Data.VariablesWritten)
 	{
 		VarsWrittenArr.Add(MakeShareable(new FJsonValueString(Var)));
 	}
 	Result->SetArrayField(TEXT("VariablesWritten"), VarsWrittenArr);
 
+	// Macro Instances
+	TArray<TSharedPtr<FJsonValue>> Macros;
+	Macros.Reserve(Data.MacroInstances.Num());
+	for (const FString& MacroName : Data.MacroInstances)
+	{
+		Macros.Add(MakeShareable(new FJsonValueString(MacroName)));
+	}
 	Result->SetArrayField(TEXT("MacroInstances"), Macros);
 
 	return Result;
 }
+
+TSharedPtr<FJsonObject> FBlueprintAuditor::SerializeWidgetToJson(const FWidgetAuditData& Data)
+{
+	TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject());
+
+	Result->SetStringField(TEXT("Name"), Data.Name);
+	Result->SetStringField(TEXT("Class"), Data.Class);
+	Result->SetBoolField(TEXT("IsVariable"), Data.bIsVariable);
+
+	if (Data.Children.Num() > 0)
+	{
+		TArray<TSharedPtr<FJsonValue>> ChildrenArray;
+		ChildrenArray.Reserve(Data.Children.Num());
+		for (const FWidgetAuditData& Child : Data.Children)
+		{
+			ChildrenArray.Add(MakeShareable(new FJsonValueObject(SerializeWidgetToJson(Child))));
+		}
+		Result->SetArrayField(TEXT("Children"), ChildrenArray);
+	}
+
+	return Result;
+}
+
+// ============================================================================
+// Legacy synchronous API (thin wrappers over Gather + Serialize)
+// ============================================================================
+
+TSharedPtr<FJsonObject> FBlueprintAuditor::AuditBlueprint(const UBlueprint* BP)
+{
+	return SerializeToJson(GatherBlueprintData(BP));
+}
+
+TSharedPtr<FJsonObject> FBlueprintAuditor::AuditGraph(const UEdGraph* Graph)
+{
+	return SerializeGraphToJson(GatherGraphData(Graph));
+}
+
+TSharedPtr<FJsonObject> FBlueprintAuditor::AuditWidget(UWidget* Widget)
+{
+	return SerializeWidgetToJson(GatherWidgetData(Widget));
+}
+
+// ============================================================================
+// Utility functions (unchanged)
+// ============================================================================
 
 FString FBlueprintAuditor::GetVariableTypeString(const FEdGraphPinType& PinType)
 {
@@ -429,32 +640,4 @@ bool FBlueprintAuditor::WriteAuditJson(const TSharedPtr<FJsonObject>& JsonObject
 
 	UE_LOG(LogCoRider, Error, TEXT("CoRider: Failed to write %s"), *OutputPath);
 	return false;
-}
-
-TSharedPtr<FJsonObject> FBlueprintAuditor::AuditWidget(UWidget* Widget)
-{
-	TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject());
-	if (!Widget)
-	{
-		return Result;
-	}
-
-	Result->SetStringField(TEXT("Name"), Widget->GetName());
-	Result->SetStringField(TEXT("Class"), Widget->GetClass()->GetName());
-	Result->SetBoolField(TEXT("IsVariable"), Widget->bIsVariable);
-
-	if (UPanelWidget* Panel = Cast<UPanelWidget>(Widget))
-	{
-		TArray<TSharedPtr<FJsonValue>> ChildrenArray;
-		for (int32 i = 0; i < Panel->GetChildrenCount(); ++i)
-		{
-			if (UWidget* Child = Panel->GetChildAt(i))
-			{
-				ChildrenArray.Add(MakeShareable(new FJsonValueObject(AuditWidget(Child))));
-			}
-		}
-		Result->SetArrayField(TEXT("Children"), ChildrenArray);
-	}
-
-	return Result;
 }

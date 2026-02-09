@@ -1,6 +1,7 @@
 #include "BlueprintAuditSubsystem.h"
 
 #include "BlueprintAuditor.h"
+#include "Async/Async.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Dom/JsonObject.h"
 #include "Engine/Blueprint.h"
@@ -9,7 +10,6 @@
 #include "Misc/PackageName.h"
 #include "Serialization/JsonSerializer.h"
 #include "UObject/ObjectSaveContext.h"
-#include "UObject/UObjectIterator.h"
 
 void UBlueprintAuditSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -21,7 +21,8 @@ void UBlueprintAuditSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	AssetRegistry.OnAssetRemoved().AddUObject(this, &UBlueprintAuditSubsystem::OnAssetRemoved);
 	AssetRegistry.OnAssetRenamed().AddUObject(this, &UBlueprintAuditSubsystem::OnAssetRenamed);
 
-	// Schedule a deferred stale-check for after the asset registry finishes loading
+	// Schedule the stale-check state machine
+	StaleCheckPhase = EStaleCheckPhase::WaitingForRegistry;
 	StaleCheckTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
 		FTickerDelegate::CreateUObject(this, &UBlueprintAuditSubsystem::OnStaleCheckTick));
 
@@ -30,12 +31,14 @@ void UBlueprintAuditSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 void UBlueprintAuditSubsystem::Deinitialize()
 {
+	// 1. Remove ticker (prevents new ticks)
 	if (StaleCheckTickerHandle.IsValid())
 	{
 		FTSTicker::GetCoreTicker().RemoveTicker(StaleCheckTickerHandle);
 		StaleCheckTickerHandle.Reset();
 	}
 
+	// 2. Remove event delegates (prevents new OnPackageSaved calls)
 	UPackage::PackageSavedWithContextEvent.RemoveAll(this);
 
 	if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
@@ -44,6 +47,39 @@ void UBlueprintAuditSubsystem::Deinitialize()
 		AssetRegistry.OnAssetRemoved().RemoveAll(this);
 		AssetRegistry.OnAssetRenamed().RemoveAll(this);
 	}
+
+	// 3. Wait on all background futures with a 5-second total timeout
+	const double WaitStart = FPlatformTime::Seconds();
+	constexpr double TimeoutSec = 5.0;
+
+	if (Phase2Future.IsValid())
+	{
+		const double Remaining = TimeoutSec - (FPlatformTime::Seconds() - WaitStart);
+		if (Remaining > 0)
+		{
+			Phase2Future.WaitFor(FTimespan::FromSeconds(Remaining));
+		}
+	}
+
+	for (TFuture<void>& F : PendingFutures)
+	{
+		if (F.IsValid())
+		{
+			const double Remaining = TimeoutSec - (FPlatformTime::Seconds() - WaitStart);
+			if (Remaining > 0)
+			{
+				F.WaitFor(FTimespan::FromSeconds(Remaining));
+			}
+		}
+	}
+
+	const double WaitElapsed = FPlatformTime::Seconds() - WaitStart;
+	if (WaitElapsed >= TimeoutSec)
+	{
+		UE_LOG(LogCoRider, Warning, TEXT("CoRider: Shutdown timed out after %.1fs waiting for background tasks"), WaitElapsed);
+	}
+
+	PendingFutures.Empty();
 
 	UE_LOG(LogCoRider, Log, TEXT("CoRider: Subsystem deinitialized."));
 
@@ -57,7 +93,7 @@ void UBlueprintAuditSubsystem::OnPackageSaved(const FString& PackageFileName, UP
 		return;
 	}
 
-	// Skip procedural/cook saves — only audit interactive editor saves
+	// Skip procedural/cook saves
 	if (ObjectSaveContext.IsCooking() || ObjectSaveContext.IsProceduralSave())
 	{
 		return;
@@ -70,14 +106,25 @@ void UBlueprintAuditSubsystem::OnPackageSaved(const FString& PackageFileName, UP
 	}
 
 	// Walk all objects in the saved package, looking for Blueprints
-	ForEachObjectWithPackage(Package, [](UObject* Object)
+	ForEachObjectWithPackage(Package, [this](UObject* Object)
 	{
 		if (const UBlueprint* BP = Cast<UBlueprint>(Object))
 		{
-			UE_LOG(LogCoRider, Verbose, TEXT("CoRider: Auditing saved Blueprint %s"), *BP->GetName());
-			const FString OutputPath = FBlueprintAuditor::GetAuditOutputPath(BP);
-			const TSharedPtr<FJsonObject> AuditJson = FBlueprintAuditor::AuditBlueprint(BP);
-			FBlueprintAuditor::WriteAuditJson(AuditJson, OutputPath);
+			// Gather data on the game thread (fast, reads UObject pointers)
+			FBlueprintAuditData Data = FBlueprintAuditor::GatherBlueprintData(BP);
+
+			// Check dedup: skip if already in-flight
+			{
+				FScopeLock Lock(&InFlightLock);
+				if (InFlightPackages.Contains(Data.PackageName))
+				{
+					UE_LOG(LogCoRider, Verbose, TEXT("CoRider: %s already in-flight, skipping"), *Data.PackageName);
+					return true;
+				}
+			}
+
+			UE_LOG(LogCoRider, Verbose, TEXT("CoRider: Dispatching async audit for saved Blueprint %s"), *Data.Name);
+			DispatchBackgroundWrite(MoveTemp(Data));
 		}
 		return true; // continue iteration
 	});
@@ -119,115 +166,218 @@ void UBlueprintAuditSubsystem::OnAssetRenamed(const FAssetData& AssetData, const
 
 bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 {
-	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
-	if (AssetRegistry.IsLoadingAssets())
+	switch (StaleCheckPhase)
 	{
-		UE_LOG(LogCoRider, Verbose, TEXT("CoRider: Asset registry still loading, deferring stale check..."));
+	case EStaleCheckPhase::WaitingForRegistry:
+	{
+		IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+		if (AssetRegistry.IsLoadingAssets())
+		{
+			UE_LOG(LogCoRider, Verbose, TEXT("CoRider: Asset registry still loading, deferring stale check..."));
+			return true; // keep ticking
+		}
+
+		StaleCheckPhase = EStaleCheckPhase::BuildingList;
 		return true;
 	}
 
-	AuditStaleBlueprints();
-
-	// Return false to unregister — this is a one-shot check
-	StaleCheckTickerHandle.Reset();
-	return false;
-}
-
-void UBlueprintAuditSubsystem::AuditStaleBlueprints()
-{
-	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
-
-	TArray<FAssetData> AllBlueprints;
-	AssetRegistry.GetAssetsByClass(UBlueprint::StaticClass()->GetClassPathName(), AllBlueprints, true);
-
-	const double StartTime = FPlatformTime::Seconds();
-	int32 TotalScanned = 0;
-	int32 UpToDateCount = 0;
-	int32 ReAuditedCount = 0;
-	int32 FailedCount = 0;
-
-	int32 AssetsSinceGC = 0;
-	constexpr int32 GCInterval = 50;
-
-	for (const FAssetData& Asset : AllBlueprints)
+	case EStaleCheckPhase::BuildingList:
 	{
-		const FString PackageName = Asset.PackageName.ToString();
+		StaleCheckStartTime = FPlatformTime::Seconds();
 
-		// Filter: Only audit project content (starts with /Game/)
-		if (!PackageName.StartsWith(TEXT("/Game/")))
+		// Query the asset registry for all /Game/ Blueprints
+		IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+		TArray<FAssetData> AllBlueprints;
+		AssetRegistry.GetAssetsByClass(UBlueprint::StaticClass()->GetClassPathName(), AllBlueprints, true);
+
+		StaleCheckEntries.Reset();
+		StaleCheckEntries.Reserve(AllBlueprints.Num());
+
+		for (const FAssetData& Asset : AllBlueprints)
 		{
-			continue;
-		}
-
-		++TotalScanned;
-
-		const FString JsonPath = FBlueprintAuditor::GetAuditOutputPath(PackageName);
-		const FString SourcePath = FBlueprintAuditor::GetSourceFilePath(PackageName);
-
-		if (SourcePath.IsEmpty())
-		{
-			++FailedCount;
-			continue;
-		}
-
-		// Compute current .uasset hash
-		const FString CurrentHash = FBlueprintAuditor::ComputeFileHash(SourcePath);
-		if (CurrentHash.IsEmpty())
-		{
-			++FailedCount;
-			continue;
-		}
-
-		// Read stored hash from existing JSON (if any)
-		FString StoredHash;
-		FString JsonString;
-		if (FFileHelper::LoadFileToString(JsonString, *JsonPath))
-		{
-			TSharedPtr<FJsonObject> ExistingJson;
-			const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonString);
-			if (FJsonSerializer::Deserialize(Reader, ExistingJson) && ExistingJson.IsValid())
+			const FString PackageName = Asset.PackageName.ToString();
+			if (!PackageName.StartsWith(TEXT("/Game/")))
 			{
-				StoredHash = ExistingJson->GetStringField(TEXT("SourceFileHash"));
+				continue;
 			}
-			else
+
+			FStaleCheckEntry Entry;
+			Entry.PackageName = PackageName;
+			Entry.SourcePath = FBlueprintAuditor::GetSourceFilePath(PackageName);
+			Entry.JsonPath = FBlueprintAuditor::GetAuditOutputPath(PackageName);
+			StaleCheckEntries.Add(MoveTemp(Entry));
+		}
+
+		UE_LOG(LogCoRider, Display, TEXT("CoRider: Stale check Phase 1 complete: %d Blueprints to check"), StaleCheckEntries.Num());
+
+		// Dispatch Phase 2 to a background thread: hash comparison
+		// Copy the entries for the background thread (no UObject pointers)
+		TArray<FStaleCheckEntry> EntriesCopy = StaleCheckEntries;
+		Phase2Future = Async(EAsyncExecution::ThreadPool, [Entries = MoveTemp(EntriesCopy)]() -> TArray<FString>
+		{
+			TArray<FString> StaleNames;
+
+			for (const FStaleCheckEntry& Entry : Entries)
 			{
-				UE_LOG(LogCoRider, Warning, TEXT("CoRider: Failed to parse existing audit JSON for %s"), *PackageName);
+				if (Entry.SourcePath.IsEmpty())
+				{
+					continue;
+				}
+
+				// Compute current .uasset hash
+				const FString CurrentHash = FBlueprintAuditor::ComputeFileHash(Entry.SourcePath);
+				if (CurrentHash.IsEmpty())
+				{
+					continue;
+				}
+
+				// Read stored hash from existing JSON (if any)
+				FString StoredHash;
+				FString JsonString;
+				if (FFileHelper::LoadFileToString(JsonString, *Entry.JsonPath))
+				{
+					TSharedPtr<FJsonObject> ExistingJson;
+					const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonString);
+					if (FJsonSerializer::Deserialize(Reader, ExistingJson) && ExistingJson.IsValid())
+					{
+						StoredHash = ExistingJson->GetStringField(TEXT("SourceFileHash"));
+					}
+				}
+
+				if (CurrentHash != StoredHash)
+				{
+					StaleNames.Add(Entry.PackageName);
+				}
 			}
-		}
 
-		// Skip if hash matches — this Blueprint is up to date
-		if (CurrentHash == StoredHash)
-		{
-			UE_LOG(LogCoRider, Verbose, TEXT("CoRider: %s is up-to-date, skipping"), *PackageName);
-			++UpToDateCount;
-			continue;
-		}
+			return StaleNames;
+		});
 
-		// Stale or missing — load the Blueprint and re-audit
-		UBlueprint* BP = Cast<UBlueprint>(Asset.GetAsset());
-		if (!BP)
-		{
-			++FailedCount;
-			UE_LOG(LogCoRider, Warning, TEXT("CoRider: Failed to load asset %s for re-audit"), *PackageName);
-			continue;
-		}
-
-		const TSharedPtr<FJsonObject> AuditJson = FBlueprintAuditor::AuditBlueprint(BP);
-		FBlueprintAuditor::WriteAuditJson(AuditJson, JsonPath);
-		++ReAuditedCount;
-
-		if (++AssetsSinceGC >= GCInterval)
-		{
-			CollectGarbage(RF_NoFlags);
-			AssetsSinceGC = 0;
-		}
+		StaleCheckPhase = EStaleCheckPhase::BackgroundHash;
+		return true;
 	}
 
-	const double Elapsed = FPlatformTime::Seconds() - StartTime;
-	UE_LOG(LogCoRider, Display, TEXT("CoRider: Stale check complete: %d scanned, %d up-to-date, %d re-audited, %d failed in %.2fs"),
-		TotalScanned, UpToDateCount, ReAuditedCount, FailedCount, Elapsed);
+	case EStaleCheckPhase::BackgroundHash:
+	{
+		if (!Phase2Future.IsReady())
+		{
+			return true; // keep polling
+		}
 
-	SweepOrphanedAuditFiles();
+		StalePackageNames = Phase2Future.Get();
+		StaleProcessIndex = 0;
+		StaleReAuditedCount = 0;
+		StaleFailedCount = 0;
+		AssetsSinceGC = 0;
+
+		UE_LOG(LogCoRider, Display, TEXT("CoRider: Stale check Phase 2 complete: %d stale Blueprint(s) to re-audit"), StalePackageNames.Num());
+
+		if (StalePackageNames.Num() == 0)
+		{
+			StaleCheckPhase = EStaleCheckPhase::Done;
+			return true;
+		}
+
+		StaleCheckPhase = EStaleCheckPhase::ProcessingStale;
+		return true;
+	}
+
+	case EStaleCheckPhase::ProcessingStale:
+	{
+		// Process a batch of stale Blueprints per tick
+		const int32 BatchEnd = FMath::Min(StaleProcessIndex + StaleProcessBatchSize, StalePackageNames.Num());
+
+		for (int32 i = StaleProcessIndex; i < BatchEnd; ++i)
+		{
+			const FString& PackageName = StalePackageNames[i];
+
+			// Load the Blueprint on the game thread
+			const FString AssetPath = PackageName + TEXT(".") + FPackageName::GetShortName(PackageName);
+			UBlueprint* BP = LoadObject<UBlueprint>(nullptr, *AssetPath);
+			if (!BP)
+			{
+				++StaleFailedCount;
+				UE_LOG(LogCoRider, Warning, TEXT("CoRider: Failed to load asset %s for re-audit"), *PackageName);
+				continue;
+			}
+
+			// Gather data on the game thread, dispatch write to background
+			FBlueprintAuditData Data = FBlueprintAuditor::GatherBlueprintData(BP);
+			DispatchBackgroundWrite(MoveTemp(Data));
+			++StaleReAuditedCount;
+
+			if (++AssetsSinceGC >= GCInterval)
+			{
+				CollectGarbage(RF_NoFlags);
+				AssetsSinceGC = 0;
+			}
+		}
+
+		StaleProcessIndex = BatchEnd;
+
+		if (StaleProcessIndex >= StalePackageNames.Num())
+		{
+			StaleCheckPhase = EStaleCheckPhase::Done;
+		}
+
+		return true;
+	}
+
+	case EStaleCheckPhase::Done:
+	{
+		const double Elapsed = FPlatformTime::Seconds() - StaleCheckStartTime;
+		UE_LOG(LogCoRider, Display, TEXT("CoRider: Stale check complete: %d scanned, %d re-audited, %d failed in %.2fs"),
+			StaleCheckEntries.Num(), StaleReAuditedCount, StaleFailedCount, Elapsed);
+
+		SweepOrphanedAuditFiles();
+
+		// Clean up state
+		StaleCheckEntries.Empty();
+		StalePackageNames.Empty();
+		StaleCheckPhase = EStaleCheckPhase::Idle;
+		StaleCheckTickerHandle.Reset();
+		return false; // unregister ticker
+	}
+
+	default:
+		return false;
+	}
+}
+
+void UBlueprintAuditSubsystem::DispatchBackgroundWrite(FBlueprintAuditData&& Data)
+{
+	const FString PackageName = Data.PackageName;
+	const FString OutputPath = Data.OutputPath;
+
+	// Add to in-flight set (under lock)
+	{
+		FScopeLock Lock(&InFlightLock);
+		InFlightPackages.Add(PackageName);
+	}
+
+	CleanupCompletedFutures();
+
+	// Capture Data by move, PackageName/OutputPath by copy for the lambda
+	TFuture<void> Future = Async(EAsyncExecution::ThreadPool,
+		[this, MovedData = MoveTemp(Data), PackageName, OutputPath]()
+		{
+			const TSharedPtr<FJsonObject> Json = FBlueprintAuditor::SerializeToJson(MovedData);
+			FBlueprintAuditor::WriteAuditJson(Json, OutputPath);
+
+			// Remove from in-flight set
+			FScopeLock Lock(&InFlightLock);
+			InFlightPackages.Remove(PackageName);
+		});
+
+	PendingFutures.Add(MoveTemp(Future));
+}
+
+void UBlueprintAuditSubsystem::CleanupCompletedFutures()
+{
+	PendingFutures.RemoveAll([](const TFuture<void>& F)
+	{
+		return F.IsReady();
+	});
 }
 
 void UBlueprintAuditSubsystem::SweepOrphanedAuditFiles()

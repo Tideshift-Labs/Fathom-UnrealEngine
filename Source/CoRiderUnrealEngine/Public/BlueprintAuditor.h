@@ -9,6 +9,103 @@ struct FEdGraphPinType;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogCoRider, Log, All);
 
+// --- POD audit data structs (no UObject pointers, safe to move across threads) ---
+
+struct FVariableAuditData
+{
+	FString Name;
+	FString Type;
+	FString Category;
+	bool bInstanceEditable = false;
+	bool bReplicated = false;
+};
+
+struct FPropertyOverrideData
+{
+	FString Name;
+	FString Value;
+};
+
+struct FComponentAuditData
+{
+	FString Name;
+	FString Class;
+};
+
+struct FTimelineAuditData
+{
+	FString Name;
+	float Length = 0.f;
+	bool bLooping = false;
+	bool bAutoPlay = false;
+	int32 FloatTrackCount = 0;
+	int32 VectorTrackCount = 0;
+	int32 LinearColorTrackCount = 0;
+	int32 EventTrackCount = 0;
+};
+
+struct FDefaultInputData
+{
+	FString Name;
+	FString Value;
+};
+
+struct FCallFunctionAuditData
+{
+	FString FunctionName;
+	FString TargetClass;
+	bool bIsNative = false;
+	TArray<FDefaultInputData> DefaultInputs;
+};
+
+struct FGraphAuditData
+{
+	FString Name;
+	int32 TotalNodes = 0;
+	TArray<FString> Events;
+	TArray<FCallFunctionAuditData> FunctionCalls;
+	TSet<FString> VariablesRead;
+	TSet<FString> VariablesWritten;
+	TArray<FString> MacroInstances;
+};
+
+struct FMacroGraphAuditData
+{
+	FString Name;
+	int32 NodeCount = 0;
+};
+
+struct FWidgetAuditData
+{
+	FString Name;
+	FString Class;
+	bool bIsVariable = false;
+	TArray<FWidgetAuditData> Children;
+};
+
+struct FBlueprintAuditData
+{
+	FString Name;
+	FString Path;
+	FString PackageName;
+	FString ParentClass;
+	FString BlueprintType;
+	FString SourceFilePath;
+	FString OutputPath;
+
+	TArray<FVariableAuditData> Variables;
+	TArray<FPropertyOverrideData> PropertyOverrides;
+	TArray<FString> Interfaces;
+	TArray<FComponentAuditData> Components;
+	TArray<FTimelineAuditData> Timelines;
+	TArray<FGraphAuditData> EventGraphs;
+	TArray<FGraphAuditData> FunctionGraphs;
+	TArray<FMacroGraphAuditData> MacroGraphs;
+
+	/** Set if this is a Widget Blueprint. */
+	TOptional<FWidgetAuditData> WidgetTree;
+};
+
 /**
  * Shared utility for auditing Blueprint assets.
  * Used by both BlueprintAuditCommandlet (batch) and BlueprintAuditSubsystem (on-save).
@@ -18,7 +115,31 @@ struct CORIDERUNREALENGINE_API FBlueprintAuditor
 	/** Bump when the JSON schema changes to invalidate all cached audit files. */
 	static constexpr int32 AuditSchemaVersion = 2;
 
-	/** Produce a JSON object summarizing the given Blueprint. */
+	// --- Game-thread gather (reads UObject pointers, populates POD structs) ---
+
+	/** Gather all audit data from a Blueprint into a POD struct. Must be called on the game thread. */
+	static FBlueprintAuditData GatherBlueprintData(const UBlueprint* BP);
+
+	/** Gather audit data from a single graph. Must be called on the game thread. */
+	static FGraphAuditData GatherGraphData(const UEdGraph* Graph);
+
+	/** Gather audit data from a widget and its children. Must be called on the game thread. */
+	static FWidgetAuditData GatherWidgetData(class UWidget* Widget);
+
+	// --- Thread-safe serialization (POD to JSON, no UObject access) ---
+
+	/** Serialize gathered Blueprint data to JSON. Computes SourceFileHash from SourceFilePath. Safe on any thread. */
+	static TSharedPtr<FJsonObject> SerializeToJson(const FBlueprintAuditData& Data);
+
+	/** Serialize gathered graph data to JSON. Safe on any thread. */
+	static TSharedPtr<FJsonObject> SerializeGraphToJson(const FGraphAuditData& Data);
+
+	/** Serialize gathered widget data to JSON. Safe on any thread. */
+	static TSharedPtr<FJsonObject> SerializeWidgetToJson(const FWidgetAuditData& Data);
+
+	// --- Legacy synchronous API (used by Commandlet and as a convenience wrapper) ---
+
+	/** Produce a JSON object summarizing the given Blueprint. Equivalent to SerializeToJson(GatherBlueprintData(BP)). */
 	static TSharedPtr<FJsonObject> AuditBlueprint(const UBlueprint* BP);
 
 	/** Produce a JSON object summarizing a single graph. */
