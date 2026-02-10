@@ -352,12 +352,16 @@ bool FAssetRefHttpServer::HandleSearch(const FHttpServerRequest& Request, const 
 		if (Limit <= 0) Limit = 50;
 	}
 
-	// Get all assets from the registry
+	// TODO(perf): Replace GetAllAssets with EnumerateAllAssets (avoids TArray copy).
+	// When pathPrefix is set, GetAssetsByPath with bRecursivePath=true would let the
+	// registry do the filtering internally, avoiding iteration over engine/plugin assets.
 	IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
 	TArray<FAssetData> AllAssets;
 	Registry.GetAllAssets(AllAssets, true);
 
-	FString QueryLower = Query.ToLower();
+	// Split query into tokens for multi-word matching (all tokens must match)
+	TArray<FString> Tokens;
+	Query.ToLower().ParseIntoArrayWS(Tokens);
 
 	// Score and collect matching assets
 	struct FScoredAsset
@@ -392,28 +396,43 @@ bool FAssetRefHttpServer::HandleSearch(const FHttpServerRequest& Request, const 
 		FString AssetName = Asset.AssetName.ToString().ToLower();
 		FString PackageName = Asset.PackageName.ToString().ToLower();
 
-		int32 Score = -1;
+		// Score each token, take the minimum. All tokens must match somewhere.
+		int32 MinScore = MAX_int32;
+		bool bAllMatched = true;
 
-		if (AssetName.Equals(QueryLower))
+		for (const FString& Token : Tokens)
 		{
-			Score = 3; // Exact name match
-		}
-		else if (AssetName.StartsWith(QueryLower))
-		{
-			Score = 2; // Name prefix
-		}
-		else if (AssetName.Contains(QueryLower))
-		{
-			Score = 1; // Name substring
-		}
-		else if (PackageName.Contains(QueryLower))
-		{
-			Score = 0; // Path-only match
+			int32 TokenScore = -1;
+
+			if (AssetName.Equals(Token))
+			{
+				TokenScore = 3; // Exact name match
+			}
+			else if (AssetName.StartsWith(Token))
+			{
+				TokenScore = 2; // Name prefix
+			}
+			else if (AssetName.Contains(Token))
+			{
+				TokenScore = 1; // Name substring
+			}
+			else if (PackageName.Contains(Token))
+			{
+				TokenScore = 0; // Path-only match
+			}
+
+			if (TokenScore < 0)
+			{
+				bAllMatched = false;
+				break;
+			}
+
+			MinScore = FMath::Min(MinScore, TokenScore);
 		}
 
-		if (Score >= 0)
+		if (bAllMatched && Tokens.Num() > 0)
 		{
-			ScoredResults.Add({ Asset, Score });
+			ScoredResults.Add({ Asset, MinScore });
 		}
 	}
 
