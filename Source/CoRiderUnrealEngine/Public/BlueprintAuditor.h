@@ -50,29 +50,53 @@ struct FDefaultInputData
 	FString Value;
 };
 
-struct FCallFunctionAuditData
+struct FGraphParamData
 {
-	FString FunctionName;
-	FString TargetClass;
+	FString Name;
+	FString Type;
+};
+
+struct FNodeAuditData
+{
+	int32 Id = 0;
+	FString Type;    // "FunctionEntry", "FunctionResult", "Event", "CustomEvent",
+	                 // "CallFunction", "Branch", "Sequence", "VariableGet",
+	                 // "VariableSet", "MacroInstance", "Timeline", "Other"
+	FString Name;
+	FString Target;  // owning class for CallFunction (empty otherwise)
 	bool bIsNative = false;
+	bool bPure = false;
+	bool bLatent = false;
 	TArray<FDefaultInputData> DefaultInputs;
+};
+
+struct FExecEdge
+{
+	int32 SourceNodeId = 0;
+	FString SourcePinName;  // "Then", "True", "False", "Completed", etc.
+	int32 TargetNodeId = 0;
+};
+
+struct FDataEdge
+{
+	int32 SourceNodeId = 0;
+	FString SourcePinName;  // "ReturnValue", etc.
+	int32 TargetNodeId = 0;
+	FString TargetPinName;  // "Condition", "InString", etc.
 };
 
 struct FGraphAuditData
 {
 	FString Name;
-	int32 TotalNodes = 0;
-	TArray<FString> Events;
-	TArray<FCallFunctionAuditData> FunctionCalls;
-	TSet<FString> VariablesRead;
-	TSet<FString> VariablesWritten;
-	TArray<FString> MacroInstances;
-};
 
-struct FMacroGraphAuditData
-{
-	FString Name;
-	int32 NodeCount = 0;
+	// Function/macro signature (populated for function and macro graphs)
+	TArray<FGraphParamData> Inputs;
+	TArray<FGraphParamData> Outputs;
+
+	// Graph topology
+	TArray<FNodeAuditData> Nodes;
+	TArray<FExecEdge> ExecFlows;
+	TArray<FDataEdge> DataFlows;
 };
 
 struct FWidgetAuditData
@@ -100,7 +124,7 @@ struct FBlueprintAuditData
 	TArray<FTimelineAuditData> Timelines;
 	TArray<FGraphAuditData> EventGraphs;
 	TArray<FGraphAuditData> FunctionGraphs;
-	TArray<FMacroGraphAuditData> MacroGraphs;
+	TArray<FGraphAuditData> MacroGraphs;
 
 	/** Set if this is a Widget Blueprint. */
 	TOptional<FWidgetAuditData> WidgetTree;
@@ -113,7 +137,7 @@ struct FBlueprintAuditData
 struct CORIDERUNREALENGINE_API FBlueprintAuditor
 {
 	/** Bump when the JSON schema changes to invalidate all cached audit files. */
-	static constexpr int32 AuditSchemaVersion = 2;
+	static constexpr int32 AuditSchemaVersion = 3;
 
 	// --- Game-thread gather (reads UObject pointers, populates POD structs) ---
 

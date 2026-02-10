@@ -13,6 +13,12 @@
 #include "K2Node_MacroInstance.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
+#include "K2Node_IfThenElse.h"
+#include "K2Node_ExecutionSequence.h"
+#include "K2Node_Knot.h"
+#include "K2Node_Timeline.h"
+#include "K2Node_FunctionEntry.h"
+#include "K2Node_FunctionResult.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
@@ -26,6 +32,68 @@
 #include "Components/PanelWidget.h"
 
 DEFINE_LOG_CATEGORY(LogCoRider);
+
+// ============================================================================
+// Internal helpers
+// ============================================================================
+
+namespace
+{
+	/** Follow pin connections through UK2Node_Knot reroute nodes to find real endpoints. */
+	TArray<UEdGraphPin*> TraceThroughKnots(UEdGraphPin* Pin)
+	{
+		TArray<UEdGraphPin*> Result;
+		for (UEdGraphPin* Linked : Pin->LinkedTo)
+		{
+			UEdGraphNode* Owner = Linked->GetOwningNode();
+			if (UK2Node_Knot* Knot = Cast<UK2Node_Knot>(Owner))
+			{
+				// Find the output pin on the knot and recurse
+				for (UEdGraphPin* KnotPin : Knot->Pins)
+				{
+					if (KnotPin->Direction == Pin->Direction)
+					{
+						continue;
+					}
+					Result.Append(TraceThroughKnots(KnotPin));
+				}
+			}
+			else
+			{
+				Result.Add(Linked);
+			}
+		}
+		return Result;
+	}
+
+	/** Returns true if a node has no exec pins (i.e. it is a pure node). */
+	bool IsNodePure(const UEdGraphNode* Node)
+	{
+		for (const UEdGraphPin* Pin : Node->Pins)
+		{
+			if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/** Strip SKEL_ prefix and _C suffix from class names. */
+	FString CleanClassName(const FString& RawName)
+	{
+		FString Name = RawName;
+		if (Name.StartsWith(TEXT("SKEL_")))
+		{
+			Name.RightChopInline(5);
+		}
+		if (Name.EndsWith(TEXT("_C")))
+		{
+			Name.LeftChopInline(2);
+		}
+		return Name;
+	}
+}
 
 // ============================================================================
 // Game-thread gather functions (read UObject pointers, populate POD structs)
@@ -169,14 +237,11 @@ FBlueprintAuditData FBlueprintAuditor::GatherBlueprintData(const UBlueprint* BP)
 		Data.FunctionGraphs.Add(GatherGraphData(Graph));
 	}
 
-	// --- Macro Graphs ---
+	// --- Macro Graphs (full topology, same as event/function graphs) ---
 	Data.MacroGraphs.Reserve(BP->MacroGraphs.Num());
 	for (UEdGraph* Graph : BP->MacroGraphs)
 	{
-		FMacroGraphAuditData MacroData;
-		MacroData.Name = Graph->GetName();
-		MacroData.NodeCount = Graph->Nodes.Num();
-		Data.MacroGraphs.Add(MoveTemp(MacroData));
+		Data.MacroGraphs.Add(GatherGraphData(Graph));
 	}
 
 	return Data;
@@ -186,40 +251,97 @@ FGraphAuditData FBlueprintAuditor::GatherGraphData(const UEdGraph* Graph)
 {
 	FGraphAuditData Data;
 	Data.Name = Graph->GetName();
-	Data.TotalNodes = Graph->Nodes.Num();
+
+	// ---- Pass 1: Build node list ----
+
+	TMap<UEdGraphNode*, int32> NodeIdMap;
+	int32 NextId = 0;
 
 	for (UEdGraphNode* Node : Graph->Nodes)
 	{
-		// Check CustomEvent before Event (CustomEvent inherits from Event)
-		if (const UK2Node_CustomEvent* CustomEvent = Cast<UK2Node_CustomEvent>(Node))
+		// Skip reroute/knot nodes entirely
+		if (Cast<UK2Node_Knot>(Node))
 		{
-			Data.Events.Add(FString::Printf(TEXT("CustomEvent: %s"), *CustomEvent->CustomFunctionName.ToString()));
+			continue;
+		}
+
+		const int32 NodeId = NextId++;
+		NodeIdMap.Add(Node, NodeId);
+
+		FNodeAuditData NodeData;
+		NodeData.Id = NodeId;
+		NodeData.bPure = IsNodePure(Node);
+
+		// Classify node type
+		// Check CustomEvent before Event (CustomEvent inherits from Event)
+		if (Cast<UK2Node_FunctionEntry>(Node))
+		{
+			NodeData.Type = TEXT("FunctionEntry");
+			NodeData.Name = Data.Name;
+
+			// Extract function input parameters from the entry node's output pins
+			for (const UEdGraphPin* Pin : Node->Pins)
+			{
+				if (Pin->Direction != EGPD_Output) continue;
+				if (Pin->bHidden) continue;
+				if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
+
+				FGraphParamData Param;
+				Param.Name = Pin->PinName.ToString();
+				Param.Type = GetVariableTypeString(Pin->PinType);
+				Data.Inputs.Add(MoveTemp(Param));
+			}
+		}
+		else if (Cast<UK2Node_FunctionResult>(Node))
+		{
+			NodeData.Type = TEXT("FunctionResult");
+			NodeData.Name = TEXT("Return");
+
+			// Extract function output parameters from the result node's input pins
+			for (const UEdGraphPin* Pin : Node->Pins)
+			{
+				if (Pin->Direction != EGPD_Input) continue;
+				if (Pin->bHidden) continue;
+				if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
+
+				FGraphParamData Param;
+				Param.Name = Pin->PinName.ToString();
+				Param.Type = GetVariableTypeString(Pin->PinType);
+				Data.Outputs.Add(MoveTemp(Param));
+			}
+		}
+		else if (const UK2Node_CustomEvent* CustomEvent = Cast<UK2Node_CustomEvent>(Node))
+		{
+			NodeData.Type = TEXT("CustomEvent");
+			NodeData.Name = CustomEvent->CustomFunctionName.ToString();
 		}
 		else if (const UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node))
 		{
-			Data.Events.Add(EventNode->GetNodeTitle(ENodeTitleType::ListView).ToString());
+			NodeData.Type = TEXT("Event");
+			NodeData.Name = EventNode->GetNodeTitle(ENodeTitleType::ListView).ToString();
 		}
 		else if (const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node))
 		{
-			FCallFunctionAuditData CallData;
-			CallData.FunctionName = CallNode->FunctionReference.GetMemberName().ToString();
+			NodeData.Type = TEXT("CallFunction");
+			NodeData.Name = CallNode->FunctionReference.GetMemberName().ToString();
 
-			CallData.TargetClass = TEXT("Self");
+			NodeData.Target = TEXT("Self");
 			const UFunction* Func = CallNode->GetTargetFunction();
 			if (Func)
 			{
 				if (const UClass* OwnerClass = Func->GetOwnerClass())
 				{
-					CallData.TargetClass = OwnerClass->GetName();
+					NodeData.Target = CleanClassName(OwnerClass->GetName());
 				}
+				NodeData.bIsNative = Func->IsNative();
+				NodeData.bLatent = Func->HasMetaData(TEXT("Latent"));
 			}
-
-			CallData.bIsNative = Func && Func->IsNative();
 
 			// Capture hardcoded (literal) input pin values
 			for (const UEdGraphPin* Pin : CallNode->Pins)
 			{
 				if (Pin->Direction != EGPD_Input) continue;
+				if (Pin->bHidden) continue;
 				if (Pin->LinkedTo.Num() > 0) continue;
 				if (Pin->DefaultValue.IsEmpty()) continue;
 				if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
@@ -228,25 +350,93 @@ FGraphAuditData FBlueprintAuditor::GatherGraphData(const UEdGraph* Graph)
 				FDefaultInputData InputData;
 				InputData.Name = Pin->PinName.ToString();
 				InputData.Value = Pin->DefaultValue;
-				CallData.DefaultInputs.Add(MoveTemp(InputData));
+				NodeData.DefaultInputs.Add(MoveTemp(InputData));
 			}
-
-			Data.FunctionCalls.Add(MoveTemp(CallData));
+		}
+		else if (Cast<UK2Node_IfThenElse>(Node))
+		{
+			NodeData.Type = TEXT("Branch");
+			NodeData.Name = TEXT("Branch");
+		}
+		else if (Cast<UK2Node_ExecutionSequence>(Node))
+		{
+			NodeData.Type = TEXT("Sequence");
+			NodeData.Name = TEXT("Sequence");
 		}
 		else if (const UK2Node_VariableGet* GetNode = Cast<UK2Node_VariableGet>(Node))
 		{
-			Data.VariablesRead.Add(GetNode->GetVarName().ToString());
+			NodeData.Type = TEXT("VariableGet");
+			NodeData.Name = GetNode->GetVarName().ToString();
 		}
 		else if (const UK2Node_VariableSet* SetNode = Cast<UK2Node_VariableSet>(Node))
 		{
-			Data.VariablesWritten.Add(SetNode->GetVarName().ToString());
+			NodeData.Type = TEXT("VariableSet");
+			NodeData.Name = SetNode->GetVarName().ToString();
 		}
 		else if (const UK2Node_MacroInstance* MacroNode = Cast<UK2Node_MacroInstance>(Node))
 		{
-			const FString MacroName = MacroNode->GetMacroGraph()
+			NodeData.Type = TEXT("MacroInstance");
+			NodeData.Name = MacroNode->GetMacroGraph()
 				? MacroNode->GetMacroGraph()->GetName()
 				: TEXT("Unknown");
-			Data.MacroInstances.Add(MacroName);
+		}
+		else if (Cast<UK2Node_Timeline>(Node))
+		{
+			NodeData.Type = TEXT("Timeline");
+			NodeData.Name = Node->GetNodeTitle(ENodeTitleType::ListView).ToString();
+		}
+		else
+		{
+			NodeData.Type = TEXT("Other");
+			NodeData.Name = Node->GetNodeTitle(ENodeTitleType::ListView).ToString();
+		}
+
+		Data.Nodes.Add(MoveTemp(NodeData));
+	}
+
+	// ---- Pass 2: Build edges (walk OUTPUT pins only to avoid duplicates) ----
+
+	for (const auto& Pair : NodeIdMap)
+	{
+		UEdGraphNode* Node = Pair.Key;
+		const int32 SourceId = Pair.Value;
+
+		for (const UEdGraphPin* Pin : Node->Pins)
+		{
+			if (Pin->Direction != EGPD_Output) continue;
+			if (Pin->bHidden) continue;
+			if (Pin->LinkedTo.Num() == 0) continue;
+
+			const bool bIsExec = Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec;
+			const FString SrcPinName = Pin->PinName.ToString();
+
+			// Resolve through knot/reroute nodes
+			TArray<UEdGraphPin*> ResolvedPins = TraceThroughKnots(const_cast<UEdGraphPin*>(Pin));
+
+			for (UEdGraphPin* TargetPin : ResolvedPins)
+			{
+				UEdGraphNode* TargetNode = TargetPin->GetOwningNode();
+				const int32* TargetIdPtr = NodeIdMap.Find(TargetNode);
+				if (!TargetIdPtr) continue;
+
+				if (bIsExec)
+				{
+					FExecEdge Edge;
+					Edge.SourceNodeId = SourceId;
+					Edge.SourcePinName = SrcPinName;
+					Edge.TargetNodeId = *TargetIdPtr;
+					Data.ExecFlows.Add(MoveTemp(Edge));
+				}
+				else
+				{
+					FDataEdge Edge;
+					Edge.SourceNodeId = SourceId;
+					Edge.SourcePinName = SrcPinName;
+					Edge.TargetNodeId = *TargetIdPtr;
+					Edge.TargetPinName = TargetPin->PinName.ToString();
+					Data.DataFlows.Add(MoveTemp(Edge));
+				}
+			}
 		}
 	}
 
@@ -390,15 +580,12 @@ TSharedPtr<FJsonObject> FBlueprintAuditor::SerializeToJson(const FBlueprintAudit
 	}
 	Result->SetArrayField(TEXT("FunctionGraphs"), FunctionGraphs);
 
-	// --- Macro Graphs ---
+	// --- Macro Graphs (full topology, same format as event/function graphs) ---
 	TArray<TSharedPtr<FJsonValue>> MacroGraphs;
 	MacroGraphs.Reserve(Data.MacroGraphs.Num());
-	for (const FMacroGraphAuditData& Macro : Data.MacroGraphs)
+	for (const FGraphAuditData& Macro : Data.MacroGraphs)
 	{
-		TSharedPtr<FJsonObject> MacroObj = MakeShareable(new FJsonObject());
-		MacroObj->SetStringField(TEXT("Name"), Macro.Name);
-		MacroObj->SetNumberField(TEXT("NodeCount"), Macro.NodeCount);
-		MacroGraphs.Add(MakeShareable(new FJsonValueObject(MacroObj)));
+		MacroGraphs.Add(MakeShareable(new FJsonValueObject(SerializeGraphToJson(Macro))));
 	}
 	Result->SetArrayField(TEXT("MacroGraphs"), MacroGraphs);
 
@@ -409,71 +596,115 @@ TSharedPtr<FJsonObject> FBlueprintAuditor::SerializeGraphToJson(const FGraphAudi
 {
 	TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject());
 	Result->SetStringField(TEXT("Name"), Data.Name);
-	Result->SetNumberField(TEXT("TotalNodes"), Data.TotalNodes);
 
-	// Events
-	TArray<TSharedPtr<FJsonValue>> Events;
-	Events.Reserve(Data.Events.Num());
-	for (const FString& Evt : Data.Events)
+	// Function/macro signature
+	if (Data.Inputs.Num() > 0)
 	{
-		Events.Add(MakeShareable(new FJsonValueString(Evt)));
-	}
-	Result->SetArrayField(TEXT("Events"), Events);
-
-	// Function Calls
-	TArray<TSharedPtr<FJsonValue>> FunctionCalls;
-	FunctionCalls.Reserve(Data.FunctionCalls.Num());
-	for (const FCallFunctionAuditData& Call : Data.FunctionCalls)
-	{
-		TSharedPtr<FJsonObject> CallObj = MakeShareable(new FJsonObject());
-		CallObj->SetStringField(TEXT("Function"), Call.FunctionName);
-		CallObj->SetStringField(TEXT("Target"), Call.TargetClass);
-		CallObj->SetBoolField(TEXT("IsNative"), Call.bIsNative);
-
-		if (Call.DefaultInputs.Num() > 0)
+		TArray<TSharedPtr<FJsonValue>> InputsArray;
+		InputsArray.Reserve(Data.Inputs.Num());
+		for (const FGraphParamData& Param : Data.Inputs)
 		{
-			TArray<TSharedPtr<FJsonValue>> DefaultInputs;
-			DefaultInputs.Reserve(Call.DefaultInputs.Num());
-			for (const FDefaultInputData& Input : Call.DefaultInputs)
-			{
-				TSharedPtr<FJsonObject> PinObj = MakeShareable(new FJsonObject());
-				PinObj->SetStringField(TEXT("Name"), Input.Name);
-				PinObj->SetStringField(TEXT("Value"), Input.Value);
-				DefaultInputs.Add(MakeShareable(new FJsonValueObject(PinObj)));
-			}
-			CallObj->SetArrayField(TEXT("DefaultInputs"), DefaultInputs);
+			TSharedPtr<FJsonObject> ParamObj = MakeShareable(new FJsonObject());
+			ParamObj->SetStringField(TEXT("Name"), Param.Name);
+			ParamObj->SetStringField(TEXT("Type"), Param.Type);
+			InputsArray.Add(MakeShareable(new FJsonValueObject(ParamObj)));
 		}
-
-		FunctionCalls.Add(MakeShareable(new FJsonValueObject(CallObj)));
+		Result->SetArrayField(TEXT("Inputs"), InputsArray);
 	}
-	Result->SetArrayField(TEXT("FunctionCalls"), FunctionCalls);
 
-	// Variables Read
-	TArray<TSharedPtr<FJsonValue>> VarsReadArr;
-	VarsReadArr.Reserve(Data.VariablesRead.Num());
-	for (const FString& Var : Data.VariablesRead)
+	if (Data.Outputs.Num() > 0)
 	{
-		VarsReadArr.Add(MakeShareable(new FJsonValueString(Var)));
+		TArray<TSharedPtr<FJsonValue>> OutputsArray;
+		OutputsArray.Reserve(Data.Outputs.Num());
+		for (const FGraphParamData& Param : Data.Outputs)
+		{
+			TSharedPtr<FJsonObject> ParamObj = MakeShareable(new FJsonObject());
+			ParamObj->SetStringField(TEXT("Name"), Param.Name);
+			ParamObj->SetStringField(TEXT("Type"), Param.Type);
+			OutputsArray.Add(MakeShareable(new FJsonValueObject(ParamObj)));
+		}
+		Result->SetArrayField(TEXT("Outputs"), OutputsArray);
 	}
-	Result->SetArrayField(TEXT("VariablesRead"), VarsReadArr);
 
-	// Variables Written
-	TArray<TSharedPtr<FJsonValue>> VarsWrittenArr;
-	VarsWrittenArr.Reserve(Data.VariablesWritten.Num());
-	for (const FString& Var : Data.VariablesWritten)
+	// Nodes
+	if (Data.Nodes.Num() > 0)
 	{
-		VarsWrittenArr.Add(MakeShareable(new FJsonValueString(Var)));
-	}
-	Result->SetArrayField(TEXT("VariablesWritten"), VarsWrittenArr);
+		TArray<TSharedPtr<FJsonValue>> NodesArray;
+		NodesArray.Reserve(Data.Nodes.Num());
+		for (const FNodeAuditData& NodeData : Data.Nodes)
+		{
+			TSharedPtr<FJsonObject> NodeObj = MakeShareable(new FJsonObject());
+			NodeObj->SetNumberField(TEXT("Id"), NodeData.Id);
+			NodeObj->SetStringField(TEXT("Type"), NodeData.Type);
+			NodeObj->SetStringField(TEXT("Name"), NodeData.Name);
 
-	// Macro Instances
-	TArray<TSharedPtr<FJsonValue>> Macros;
-	Macros.Reserve(Data.MacroInstances.Num());
-	for (const FString& MacroName : Data.MacroInstances)
-	{
-		Macros.Add(MakeShareable(new FJsonValueString(MacroName)));
+			if (!NodeData.Target.IsEmpty())
+			{
+				NodeObj->SetStringField(TEXT("Target"), NodeData.Target);
+			}
+			if (!NodeData.bIsNative && NodeData.Type == TEXT("CallFunction"))
+			{
+				NodeObj->SetBoolField(TEXT("IsNative"), false);
+			}
+			if (NodeData.bPure)
+			{
+				NodeObj->SetBoolField(TEXT("Pure"), true);
+			}
+			if (NodeData.bLatent)
+			{
+				NodeObj->SetBoolField(TEXT("Latent"), true);
+			}
+			if (NodeData.DefaultInputs.Num() > 0)
+			{
+				TArray<TSharedPtr<FJsonValue>> DefaultInputs;
+				DefaultInputs.Reserve(NodeData.DefaultInputs.Num());
+				for (const FDefaultInputData& Input : NodeData.DefaultInputs)
+				{
+					TSharedPtr<FJsonObject> PinObj = MakeShareable(new FJsonObject());
+					PinObj->SetStringField(TEXT("Name"), Input.Name);
+					PinObj->SetStringField(TEXT("Value"), Input.Value);
+					DefaultInputs.Add(MakeShareable(new FJsonValueObject(PinObj)));
+				}
+				NodeObj->SetArrayField(TEXT("DefaultInputs"), DefaultInputs);
+			}
+
+			NodesArray.Add(MakeShareable(new FJsonValueObject(NodeObj)));
+		}
+		Result->SetArrayField(TEXT("Nodes"), NodesArray);
 	}
-	Result->SetArrayField(TEXT("MacroInstances"), Macros);
+
+	// V3 Topology: ExecFlows
+	if (Data.ExecFlows.Num() > 0)
+	{
+		TArray<TSharedPtr<FJsonValue>> ExecArray;
+		ExecArray.Reserve(Data.ExecFlows.Num());
+		for (const FExecEdge& Edge : Data.ExecFlows)
+		{
+			TSharedPtr<FJsonObject> EdgeObj = MakeShareable(new FJsonObject());
+			EdgeObj->SetNumberField(TEXT("Src"), Edge.SourceNodeId);
+			EdgeObj->SetStringField(TEXT("SrcPin"), Edge.SourcePinName);
+			EdgeObj->SetNumberField(TEXT("Dst"), Edge.TargetNodeId);
+			ExecArray.Add(MakeShareable(new FJsonValueObject(EdgeObj)));
+		}
+		Result->SetArrayField(TEXT("ExecFlows"), ExecArray);
+	}
+
+	// V3 Topology: DataFlows
+	if (Data.DataFlows.Num() > 0)
+	{
+		TArray<TSharedPtr<FJsonValue>> DataArray;
+		DataArray.Reserve(Data.DataFlows.Num());
+		for (const FDataEdge& Edge : Data.DataFlows)
+		{
+			TSharedPtr<FJsonObject> EdgeObj = MakeShareable(new FJsonObject());
+			EdgeObj->SetNumberField(TEXT("Src"), Edge.SourceNodeId);
+			EdgeObj->SetStringField(TEXT("SrcPin"), Edge.SourcePinName);
+			EdgeObj->SetNumberField(TEXT("Dst"), Edge.TargetNodeId);
+			EdgeObj->SetStringField(TEXT("DstPin"), Edge.TargetPinName);
+			DataArray.Add(MakeShareable(new FJsonValueObject(EdgeObj)));
+		}
+		Result->SetArrayField(TEXT("DataFlows"), DataArray);
+	}
 
 	return Result;
 }

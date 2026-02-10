@@ -107,28 +107,68 @@ When the editor is running, the `UBlueprintAuditSubsystem` automatically re-audi
   "EventGraphs": [
     {
       "Name": "EventGraph",
-      "TotalNodes": 42,
-      "Events": ["Event BeginPlay", "CustomEvent: OnMenuOpened"],
-      "FunctionCalls": [
-        {
-          "Function": "PlayAnimation",
-          "Target": "UserWidget",
-          "IsNative": true,
-          "DefaultInputs": [
-            {"Name": "PlaybackSpeed", "Value": "1.5"}
-          ]
-        }
+      "Nodes": [
+        {"Id": 0, "Type": "Event", "Name": "Event BeginPlay"},
+        {"Id": 1, "Type": "CallFunction", "Name": "IsValid", "Target": "KismetSystemLibrary", "Pure": true},
+        {"Id": 2, "Type": "Branch", "Name": "Branch"},
+        {"Id": 3, "Type": "CallFunction", "Name": "PlayAnimation", "Target": "UserWidget", "IsNative": false},
+        {"Id": 4, "Type": "VariableGet", "Name": "PlayerName", "Pure": true},
+        {"Id": 5, "Type": "VariableSet", "Name": "bIsActive"}
       ],
-      "VariablesRead": ["PlayerName"],
-      "VariablesWritten": ["bIsActive"],
-      "MacroInstances": ["IsValid"]
+      "ExecFlows": [
+        {"Src": 0, "SrcPin": "Then", "Dst": 2},
+        {"Src": 2, "SrcPin": "True", "Dst": 3},
+        {"Src": 2, "SrcPin": "False", "Dst": 5}
+      ],
+      "DataFlows": [
+        {"Src": 4, "SrcPin": "PlayerName", "Dst": 1, "DstPin": "Object"},
+        {"Src": 1, "SrcPin": "ReturnValue", "Dst": 2, "DstPin": "Condition"}
+      ]
     }
   ],
 
-  "FunctionGraphs": [...],
+  "FunctionGraphs": [
+    {
+      "Name": "GetFormattedName",
+      "Inputs": [{"Name": "Prefix", "Type": "String"}],
+      "Outputs": [{"Name": "ReturnValue", "Type": "String"}],
+      "Nodes": [
+        {"Id": 0, "Type": "FunctionEntry", "Name": "GetFormattedName"},
+        {"Id": 1, "Type": "CallFunction", "Name": "Concat_StrStr", "Target": "KismetStringLibrary", "Pure": true},
+        {"Id": 2, "Type": "VariableGet", "Name": "PlayerName", "Pure": true},
+        {"Id": 3, "Type": "FunctionResult", "Name": "Return"}
+      ],
+      "ExecFlows": [
+        {"Src": 0, "SrcPin": "Then", "Dst": 3}
+      ],
+      "DataFlows": [
+        {"Src": 0, "SrcPin": "Prefix", "Dst": 1, "DstPin": "A"},
+        {"Src": 2, "SrcPin": "PlayerName", "Dst": 1, "DstPin": "B"},
+        {"Src": 1, "SrcPin": "ReturnValue", "Dst": 3, "DstPin": "ReturnValue"}
+      ]
+    }
+  ],
+
   "MacroGraphs": [...]
 }
 ```
+
+### Graph Fields
+
+Each graph object (in EventGraphs, FunctionGraphs, MacroGraphs) contains:
+
+| Field | Description |
+|-------|-------------|
+| `Name` | Graph name. |
+| `Inputs` | Function/macro input parameters (`Name`, `Type`). Only present for function and macro graphs. |
+| `Outputs` | Function/macro output/return parameters (`Name`, `Type`). Only present when the function has return values. |
+| `Nodes` | Sequential node list with `Id`, `Type`, `Name`. Optional: `Target` (owning class for CallFunction), `IsNative` (only when false, since most calls are native), `Pure`/`Latent` (only when true), `DefaultInputs` (only when non-empty). |
+| `ExecFlows` | Execution edges. Keys: `Src` (source node ID), `SrcPin` (e.g. "Then", "True", "False"), `Dst` (target node ID). |
+| `DataFlows` | Data dependency edges. Keys: `Src`, `SrcPin` (e.g. "ReturnValue"), `Dst`, `DstPin` (e.g. "Condition"). |
+
+Node types: `FunctionEntry`, `FunctionResult`, `Event`, `CustomEvent`, `CallFunction`, `Branch`, `Sequence`, `VariableGet`, `VariableSet`, `MacroInstance`, `Timeline`, `Other`.
+
+Reroute/knot nodes are skipped; edges trace through them to the real endpoints. All arrays are omitted when empty.
 
 ## Integration with Rider Plugin
 
