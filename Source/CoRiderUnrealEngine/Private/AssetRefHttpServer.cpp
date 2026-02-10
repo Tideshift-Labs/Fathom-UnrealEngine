@@ -352,18 +352,37 @@ bool FAssetRefHttpServer::HandleSearch(const FHttpServerRequest& Request, const 
 		if (Limit <= 0) Limit = 50;
 	}
 
-	// TODO(perf): Replace GetAllAssets with EnumerateAllAssets (avoids TArray copy).
-	// When pathPrefix is set, GetAssetsByPath with bRecursivePath=true would let the
-	// registry do the filtering internally, avoiding iteration over engine/plugin assets.
 	IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
-	TArray<FAssetData> AllAssets;
-	Registry.GetAllAssets(AllAssets, true);
+
+	// Build FARFilter so the registry handles path and class filtering internally,
+	// avoiding iteration over engine/plugin assets entirely.
+	FARFilter Filter;
+	Filter.bIncludeOnlyOnDiskAssets = true;
+
+	if (!PathPrefix.IsEmpty())
+	{
+		Filter.PackagePaths.Add(FName(*PathPrefix));
+		Filter.bRecursivePaths = true;
+	}
+
+	// Resolve class filter to FTopLevelAssetPath for the registry filter.
+	// If resolution fails (typo, module not loaded), fall back to manual filtering.
+	bool bClassInFilter = false;
+	if (!ClassFilter.IsEmpty())
+	{
+		UClass* ResolvedClass = FindFirstObject<UClass>(*ClassFilter, EFindFirstObjectOptions::NativeFirst);
+		if (ResolvedClass)
+		{
+			Filter.ClassPaths.Add(ResolvedClass->GetClassPathName());
+			bClassInFilter = true;
+		}
+	}
 
 	// Split query into tokens for multi-word matching (all tokens must match)
 	TArray<FString> Tokens;
 	Query.ToLower().ParseIntoArrayWS(Tokens);
 
-	// Score and collect matching assets
+	// Score and collect matching assets via callback (no bulk TArray copy)
 	struct FScoredAsset
 	{
 		FAssetData AssetData;
@@ -371,25 +390,18 @@ bool FAssetRefHttpServer::HandleSearch(const FHttpServerRequest& Request, const 
 	};
 	TArray<FScoredAsset> ScoredResults;
 
-	for (const FAssetData& Asset : AllAssets)
-	{
-		// Apply path prefix filter if specified
-		if (!PathPrefix.IsEmpty())
-		{
-			FString PkgName = Asset.PackageName.ToString();
-			if (!PkgName.StartsWith(PathPrefix))
-			{
-				continue;
-			}
-		}
+	// If class wasn't resolved into the filter, fall back to manual class matching
+	const bool bManualClassFilter = !ClassFilter.IsEmpty() && !bClassInFilter;
 
-		// Apply class filter if specified
-		if (!ClassFilter.IsEmpty())
+	auto ScoreAsset = [&Tokens, &ScoredResults, bManualClassFilter, &ClassFilter](const FAssetData& Asset) -> bool
+	{
+		// Manual class filter fallback when UClass couldn't be resolved
+		if (bManualClassFilter)
 		{
 			FString AssetClassName = Asset.AssetClassPath.GetAssetName().ToString();
 			if (!AssetClassName.Equals(ClassFilter, ESearchCase::IgnoreCase))
 			{
-				continue;
+				return true; // skip, continue enumeration
 			}
 		}
 
@@ -434,6 +446,17 @@ bool FAssetRefHttpServer::HandleSearch(const FHttpServerRequest& Request, const 
 		{
 			ScoredResults.Add({ Asset, MinScore });
 		}
+
+		return true; // continue enumeration
+	};
+
+	if (Filter.IsEmpty())
+	{
+		Registry.EnumerateAllAssets(ScoreAsset);
+	}
+	else
+	{
+		Registry.EnumerateAssets(Filter, ScoreAsset);
 	}
 
 	// Sort by score descending
