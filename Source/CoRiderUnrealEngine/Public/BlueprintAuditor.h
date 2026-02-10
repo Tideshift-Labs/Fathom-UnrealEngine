@@ -103,6 +103,7 @@ struct FWidgetAuditData
 	FString Name;
 	FString Class;
 	bool bIsVariable = false;
+	FString SlotName;  // Non-empty when this widget is content placed in a named slot
 	TArray<FWidgetAuditData> Children;
 };
 

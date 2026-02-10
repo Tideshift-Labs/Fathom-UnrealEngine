@@ -25,6 +25,7 @@
 #include "UObject/UnrealType.h"
 #include "WidgetBlueprint.h"
 #include "Blueprint/WidgetTree.h"
+#include "Components/NamedSlotInterface.h"
 #include "Components/Widget.h"
 #include "Components/PanelWidget.h"
 
@@ -464,6 +465,22 @@ FWidgetAuditData FBlueprintAuditor::GatherWidgetData(UWidget* Widget)
 		}
 	}
 
+	// Named slot content (template widgets / user widgets with slots)
+	if (INamedSlotInterface* SlotHost = Cast<INamedSlotInterface>(Widget))
+	{
+		TArray<FName> SlotNames;
+		SlotHost->GetSlotNames(SlotNames);
+		for (const FName& SlotName : SlotNames)
+		{
+			if (UWidget* Content = SlotHost->GetContentForSlot(SlotName))
+			{
+				FWidgetAuditData SlotData = GatherWidgetData(Content);
+				SlotData.SlotName = SlotName.ToString();
+				Data.Children.Add(MoveTemp(SlotData));
+			}
+		}
+	}
+
 	return Data;
 }
 
@@ -746,6 +763,10 @@ FString FBlueprintAuditor::SerializeWidgetToMarkdown(const FWidgetAuditData& Dat
 	if (Data.bIsVariable)
 	{
 		Result += TEXT(" [var]");
+	}
+	if (!Data.SlotName.IsEmpty())
+	{
+		Result += FString::Printf(TEXT(" [slot:%s]"), *Data.SlotName);
 	}
 	Result += TEXT("\n");
 

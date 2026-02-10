@@ -90,6 +90,8 @@ Hash: fe020519d8ca4cf5b2e8690bd0bfabca
 - CanvasPanel_0 (CanvasPanel)
   - Button_Start (Button) [var]
   - Text_Title (TextBlock)
+  - WBP_TemplateLayout (WBP_TemplateLayout_C)
+    - VerticalBox_Content (VerticalBox) [slot:ContentSlot]
 
 ## EventGraph
 | Id | Type | Name | Details |
@@ -131,7 +133,7 @@ Data: 0.Prefix->1.A, 2.PlayerName->1.B, 1.ReturnValue->3.ReturnValue
 - Functions: `## Function: Name(params) -> returns`
 - Macros: `## Macro: Name`
 
-**Widget tree**: Indented list with `[var]` suffix for variable widgets.
+**Widget tree**: Indented list with `[var]` suffix for variable widgets and `[slot:Name]` suffix for content placed in named slots of template widgets.
 
 **Node types**: `FunctionEntry`, `FunctionResult`, `Event`, `CustomEvent`, `CallFunction`, `Branch`, `Sequence`, `VariableGet`, `VariableSet`, `MacroInstance`, `Timeline`, `Other`.
 
