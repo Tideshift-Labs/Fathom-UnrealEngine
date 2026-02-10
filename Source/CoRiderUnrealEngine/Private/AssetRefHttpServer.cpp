@@ -339,6 +339,12 @@ bool FAssetRefHttpServer::HandleSearch(const FHttpServerRequest& Request, const 
 		ClassFilter = Request.QueryParams[TEXT("class")];
 	}
 
+	FString PathPrefix;
+	if (Request.QueryParams.Contains(TEXT("pathPrefix")))
+	{
+		PathPrefix = Request.QueryParams[TEXT("pathPrefix")];
+	}
+
 	int32 Limit = 50;
 	if (Request.QueryParams.Contains(TEXT("limit")))
 	{
@@ -363,6 +369,16 @@ bool FAssetRefHttpServer::HandleSearch(const FHttpServerRequest& Request, const 
 
 	for (const FAssetData& Asset : AllAssets)
 	{
+		// Apply path prefix filter if specified
+		if (!PathPrefix.IsEmpty())
+		{
+			FString PkgName = Asset.PackageName.ToString();
+			if (!PkgName.StartsWith(PathPrefix))
+			{
+				continue;
+			}
+		}
+
 		// Apply class filter if specified
 		if (!ClassFilter.IsEmpty())
 		{

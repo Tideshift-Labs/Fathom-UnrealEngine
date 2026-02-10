@@ -139,6 +139,36 @@ Data: 0.Prefix->1.A, 2.PlayerName->1.B, 1.ReturnValue->3.ReturnValue
 
 Reroute/knot nodes are skipped; edges trace through them to the real endpoints.
 
+## HTTP API (Asset Reference Server)
+
+When the editor is running, the plugin starts a lightweight HTTP server (ports 19900-19910) for asset queries.
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /asset-refs/health` | Server status |
+| `GET /asset-refs/dependencies?asset=/Game/Path` | Asset dependencies |
+| `GET /asset-refs/referencers?asset=/Game/Path` | Asset referencers |
+| `GET /asset-refs/search?q=term` | Fuzzy search for assets by name |
+
+### Asset Search Parameters
+
+| Param | Required | Description |
+|-------|----------|-------------|
+| `q` | Yes | Search term (matched against asset name and package path) |
+| `class` | No | Filter by asset class (e.g. `WidgetBlueprint`, `DataTable`) |
+| `pathPrefix` | No | Filter by package path prefix (e.g. `/Game` for project assets only) |
+| `limit` | No | Max results to return (default: 50) |
+
+Scoring: exact name match > name prefix > name substring > path-only match.
+
+```powershell
+# Search for project assets only
+curl "http://localhost:19900/asset-refs/search?q=main&pathPrefix=/Game"
+
+# Filter by class
+curl "http://localhost:19900/asset-refs/search?q=widget&class=WidgetBlueprint&limit=5"
+```
+
 ## Integration with Rider Plugin
 
 This plugin is designed to work with the companion Rider plugin (`CoRider`). The Rider plugin:
