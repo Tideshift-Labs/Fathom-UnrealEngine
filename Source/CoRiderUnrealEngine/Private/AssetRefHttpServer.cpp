@@ -126,6 +126,12 @@ bool FAssetRefHttpServer::TryBind(int32 Port)
 		EHttpServerRequestVerbs::VERB_GET,
 		FHttpRequestHandler::CreateRaw(this, &FAssetRefHttpServer::HandleReferencers)));
 
+	// GET /asset-refs/search
+	Handles.Add(Router->BindRoute(
+		FHttpPath(TEXT("/asset-refs/search")),
+		EHttpServerRequestVerbs::VERB_GET,
+		FHttpRequestHandler::CreateRaw(this, &FAssetRefHttpServer::HandleSearch)));
+
 	// Check all handles are valid
 	for (const FHttpRouteHandle& Handle : Handles)
 	{
@@ -292,6 +298,136 @@ bool FAssetRefHttpServer::HandleAssetQuery(const FHttpServerRequest& Request, co
 
 	const FString FieldName = bGetDependencies ? TEXT("dependencies") : TEXT("referencers");
 	ResponseJson->SetArrayField(FieldName, EntriesArray);
+
+	FString Body;
+	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
+	FJsonSerializer::Serialize(ResponseJson, Writer);
+
+	auto Response = FHttpServerResponse::Create(Body, TEXT("application/json"));
+	OnComplete(MoveTemp(Response));
+	return true;
+}
+
+bool FAssetRefHttpServer::HandleSearch(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+{
+	// Parse query parameters
+	FString Query;
+	if (Request.QueryParams.Contains(TEXT("q")))
+	{
+		Query = Request.QueryParams[TEXT("q")];
+	}
+
+	if (Query.IsEmpty())
+	{
+		TSharedRef<FJsonObject> ErrorJson = MakeShared<FJsonObject>();
+		ErrorJson->SetStringField(TEXT("error"), TEXT("Missing required 'q' query parameter"));
+		ErrorJson->SetStringField(TEXT("usage"), TEXT("/asset-refs/search?q=term&class=WidgetBlueprint&limit=50"));
+
+		FString Body;
+		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
+		FJsonSerializer::Serialize(ErrorJson, Writer);
+
+		auto Response = FHttpServerResponse::Create(Body, TEXT("application/json"));
+		Response->Code = EHttpServerResponseCodes::BadRequest;
+		OnComplete(MoveTemp(Response));
+		return true;
+	}
+
+	FString ClassFilter;
+	if (Request.QueryParams.Contains(TEXT("class")))
+	{
+		ClassFilter = Request.QueryParams[TEXT("class")];
+	}
+
+	int32 Limit = 50;
+	if (Request.QueryParams.Contains(TEXT("limit")))
+	{
+		Limit = FCString::Atoi(*Request.QueryParams[TEXT("limit")]);
+		if (Limit <= 0) Limit = 50;
+	}
+
+	// Get all assets from the registry
+	IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	TArray<FAssetData> AllAssets;
+	Registry.GetAllAssets(AllAssets, true);
+
+	FString QueryLower = Query.ToLower();
+
+	// Score and collect matching assets
+	struct FScoredAsset
+	{
+		FAssetData AssetData;
+		int32 Score;
+	};
+	TArray<FScoredAsset> ScoredResults;
+
+	for (const FAssetData& Asset : AllAssets)
+	{
+		// Apply class filter if specified
+		if (!ClassFilter.IsEmpty())
+		{
+			FString AssetClassName = Asset.AssetClassPath.GetAssetName().ToString();
+			if (!AssetClassName.Equals(ClassFilter, ESearchCase::IgnoreCase))
+			{
+				continue;
+			}
+		}
+
+		FString AssetName = Asset.AssetName.ToString().ToLower();
+		FString PackageName = Asset.PackageName.ToString().ToLower();
+
+		int32 Score = -1;
+
+		if (AssetName.Equals(QueryLower))
+		{
+			Score = 3; // Exact name match
+		}
+		else if (AssetName.StartsWith(QueryLower))
+		{
+			Score = 2; // Name prefix
+		}
+		else if (AssetName.Contains(QueryLower))
+		{
+			Score = 1; // Name substring
+		}
+		else if (PackageName.Contains(QueryLower))
+		{
+			Score = 0; // Path-only match
+		}
+
+		if (Score >= 0)
+		{
+			ScoredResults.Add({ Asset, Score });
+		}
+	}
+
+	// Sort by score descending
+	ScoredResults.Sort([](const FScoredAsset& A, const FScoredAsset& B)
+	{
+		return A.Score > B.Score;
+	});
+
+	// Cap at limit
+	if (ScoredResults.Num() > Limit)
+	{
+		ScoredResults.SetNum(Limit);
+	}
+
+	// Build response
+	TSharedRef<FJsonObject> ResponseJson = MakeShared<FJsonObject>();
+	ResponseJson->SetStringField(TEXT("query"), Query);
+
+	TArray<TSharedPtr<FJsonValue>> ResultsArray;
+	for (const FScoredAsset& Scored : ScoredResults)
+	{
+		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("package"), Scored.AssetData.PackageName.ToString());
+		Entry->SetStringField(TEXT("name"), Scored.AssetData.AssetName.ToString());
+		Entry->SetStringField(TEXT("assetClass"), Scored.AssetData.AssetClassPath.GetAssetName().ToString());
+		ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+	}
+
+	ResponseJson->SetArrayField(TEXT("results"), ResultsArray);
 
 	FString Body;
 	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);

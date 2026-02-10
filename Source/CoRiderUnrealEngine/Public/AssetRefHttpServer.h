@@ -42,6 +42,7 @@ private:
 	bool HandleHealth(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
 	bool HandleDependencies(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
 	bool HandleReferencers(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
+	bool HandleSearch(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
 
 	/** Shared logic for dependencies/referencers. bGetDependencies=true for deps, false for referencers. */
 	bool HandleAssetQuery(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete, bool bGetDependencies);
