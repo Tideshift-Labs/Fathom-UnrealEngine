@@ -23,13 +23,13 @@ struct FStaleCheckEntry
 {
 	FString PackageName;
 	FString SourcePath;
-	FString JsonPath;
+	FString AuditPath;
 };
 
 /**
  * Editor subsystem that automatically audits Blueprint assets on save.
  * Hooks into UPackage::PackageSavedWithContextEvent and writes a per-file
- * JSON audit to Saved/Audit/Blueprints/, mirroring the Content directory layout.
+ * Markdown audit to Saved/Audit/Blueprints/, mirroring the Content directory layout.
  *
  * On startup, runs a three-phase stale check that offloads hashing and I/O
  * to background threads and chunks game-thread work across ticks to avoid
@@ -48,16 +48,16 @@ public:
 private:
 	void OnPackageSaved(const FString& PackageFileName, UPackage* Package, FObjectPostSaveContext ObjectSaveContext);
 
-	/** Delete the audit JSON when a Blueprint asset is removed from the project. */
+	/** Delete the audit file when a Blueprint asset is removed from the project. */
 	void OnAssetRemoved(const FAssetData& AssetData);
 
-	/** Delete the old-path audit JSON when a Blueprint asset is renamed or moved. */
+	/** Delete the old-path audit file when a Blueprint asset is renamed or moved. */
 	void OnAssetRenamed(const FAssetData& AssetData, const FString& OldObjectPath);
 
 	/** Ticker callback: drives the stale check state machine. */
 	bool OnStaleCheckTick(float DeltaTime);
 
-	/** Walk the audit directory and delete JSON files whose source .uasset no longer exists. */
+	/** Walk the audit directory and delete audit files whose source .uasset no longer exists. */
 	void SweepOrphanedAuditFiles();
 
 	/**

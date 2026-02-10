@@ -1,6 +1,5 @@
 #include "BlueprintAuditor.h"
 
-#include "Dom/JsonValue.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "Engine/Blueprint.h"
@@ -23,8 +22,6 @@
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "Misc/SecureHash.h"
-#include "Serialization/JsonSerializer.h"
-#include "Serialization/JsonWriter.h"
 #include "UObject/UnrealType.h"
 #include "WidgetBlueprint.h"
 #include "Blueprint/WidgetTree.h"
@@ -471,261 +468,290 @@ FWidgetAuditData FBlueprintAuditor::GatherWidgetData(UWidget* Widget)
 }
 
 // ============================================================================
-// Thread-safe serialize functions (POD structs to JSON, no UObject access)
+// Thread-safe serialize functions (POD structs to Markdown, no UObject access)
 // ============================================================================
 
-TSharedPtr<FJsonObject> FBlueprintAuditor::SerializeToJson(const FBlueprintAuditData& Data)
+FString FBlueprintAuditor::SerializeToMarkdown(const FBlueprintAuditData& Data)
 {
-	TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject());
+	FString Result;
+	Result.Reserve(4096);
 
-	// --- Metadata ---
-	Result->SetStringField(TEXT("Name"), Data.Name);
-	Result->SetStringField(TEXT("Path"), Data.Path);
-	Result->SetStringField(TEXT("ParentClass"), Data.ParentClass);
-	Result->SetStringField(TEXT("BlueprintType"), Data.BlueprintType);
+	// --- Header block ---
+	Result += FString::Printf(TEXT("# %s\n"), *Data.Name);
+	Result += FString::Printf(TEXT("Path: %s\n"), *Data.Path);
+	Result += FString::Printf(TEXT("Parent: %s\n"), *Data.ParentClass);
+	Result += FString::Printf(TEXT("Type: %s\n"), *Data.BlueprintType);
 
-	// --- Source file hash (computed here on the background thread) ---
 	if (!Data.SourceFilePath.IsEmpty())
 	{
-		Result->SetStringField(TEXT("SourceFileHash"), ComputeFileHash(Data.SourceFilePath));
+		Result += FString::Printf(TEXT("Hash: %s\n"), *ComputeFileHash(Data.SourceFilePath));
 	}
 
 	// --- Variables ---
-	TArray<TSharedPtr<FJsonValue>> VariablesArray;
-	VariablesArray.Reserve(Data.Variables.Num());
-	for (const FVariableAuditData& Var : Data.Variables)
+	if (Data.Variables.Num() > 0)
 	{
-		TSharedPtr<FJsonObject> VarObj = MakeShareable(new FJsonObject());
-		VarObj->SetStringField(TEXT("Name"), Var.Name);
-		VarObj->SetStringField(TEXT("Type"), Var.Type);
-		VarObj->SetStringField(TEXT("Category"), Var.Category);
-		VarObj->SetBoolField(TEXT("InstanceEditable"), Var.bInstanceEditable);
-		VarObj->SetBoolField(TEXT("Replicated"), Var.bReplicated);
-		VariablesArray.Add(MakeShareable(new FJsonValueObject(VarObj)));
+		Result += TEXT("\n## Variables\n");
+		Result += TEXT("| Name | Type | Category | Editable | Replicated |\n");
+		Result += TEXT("|------|------|----------|----------|------------|\n");
+		for (const FVariableAuditData& Var : Data.Variables)
+		{
+			Result += FString::Printf(TEXT("| %s | %s | %s | %s | %s |\n"),
+				*Var.Name, *Var.Type, *Var.Category,
+				Var.bInstanceEditable ? TEXT("Yes") : TEXT("No"),
+				Var.bReplicated ? TEXT("Yes") : TEXT("No"));
+		}
 	}
-	Result->SetArrayField(TEXT("Variables"), VariablesArray);
 
 	// --- Property Overrides ---
-	TArray<TSharedPtr<FJsonValue>> OverridesArray;
-	OverridesArray.Reserve(Data.PropertyOverrides.Num());
-	for (const FPropertyOverrideData& Override : Data.PropertyOverrides)
+	if (Data.PropertyOverrides.Num() > 0)
 	{
-		TSharedPtr<FJsonObject> OverrideObj = MakeShareable(new FJsonObject());
-		OverrideObj->SetStringField(TEXT("Name"), Override.Name);
-		OverrideObj->SetStringField(TEXT("Value"), Override.Value);
-		OverridesArray.Add(MakeShareable(new FJsonValueObject(OverrideObj)));
+		Result += TEXT("\n## Property Overrides\n");
+		for (const FPropertyOverrideData& Override : Data.PropertyOverrides)
+		{
+			Result += FString::Printf(TEXT("- %s = %s\n"), *Override.Name, *Override.Value);
+		}
 	}
-	Result->SetArrayField(TEXT("PropertyOverrides"), OverridesArray);
 
 	// --- Interfaces ---
-	TArray<TSharedPtr<FJsonValue>> InterfacesArray;
-	InterfacesArray.Reserve(Data.Interfaces.Num());
-	for (const FString& Iface : Data.Interfaces)
+	if (Data.Interfaces.Num() > 0)
 	{
-		InterfacesArray.Add(MakeShareable(new FJsonValueString(Iface)));
+		Result += TEXT("\n## Interfaces\n");
+		for (const FString& Iface : Data.Interfaces)
+		{
+			Result += FString::Printf(TEXT("- %s\n"), *Iface);
+		}
 	}
-	Result->SetArrayField(TEXT("Interfaces"), InterfacesArray);
 
 	// --- Components ---
-	TArray<TSharedPtr<FJsonValue>> ComponentsArray;
-	ComponentsArray.Reserve(Data.Components.Num());
-	for (const FComponentAuditData& Comp : Data.Components)
+	if (Data.Components.Num() > 0)
 	{
-		TSharedPtr<FJsonObject> CompObj = MakeShareable(new FJsonObject());
-		CompObj->SetStringField(TEXT("Name"), Comp.Name);
-		CompObj->SetStringField(TEXT("Class"), Comp.Class);
-		ComponentsArray.Add(MakeShareable(new FJsonValueObject(CompObj)));
+		Result += TEXT("\n## Components\n");
+		Result += TEXT("| Name | Class |\n");
+		Result += TEXT("|------|-------|\n");
+		for (const FComponentAuditData& Comp : Data.Components)
+		{
+			Result += FString::Printf(TEXT("| %s | %s |\n"), *Comp.Name, *Comp.Class);
+		}
 	}
-	Result->SetArrayField(TEXT("Components"), ComponentsArray);
 
 	// --- Timelines ---
-	TArray<TSharedPtr<FJsonValue>> TimelinesArray;
-	TimelinesArray.Reserve(Data.Timelines.Num());
-	for (const FTimelineAuditData& TL : Data.Timelines)
+	if (Data.Timelines.Num() > 0)
 	{
-		TSharedPtr<FJsonObject> TLObj = MakeShareable(new FJsonObject());
-		TLObj->SetStringField(TEXT("Name"), TL.Name);
-		TLObj->SetNumberField(TEXT("Length"), TL.Length);
-		TLObj->SetBoolField(TEXT("Looping"), TL.bLooping);
-		TLObj->SetBoolField(TEXT("AutoPlay"), TL.bAutoPlay);
-		TLObj->SetNumberField(TEXT("FloatTrackCount"), TL.FloatTrackCount);
-		TLObj->SetNumberField(TEXT("VectorTrackCount"), TL.VectorTrackCount);
-		TLObj->SetNumberField(TEXT("LinearColorTrackCount"), TL.LinearColorTrackCount);
-		TLObj->SetNumberField(TEXT("EventTrackCount"), TL.EventTrackCount);
-		TimelinesArray.Add(MakeShareable(new FJsonValueObject(TLObj)));
+		Result += TEXT("\n## Timelines\n");
+		Result += TEXT("| Name | Length | Loop | AutoPlay | Float | Vector | Color | Event |\n");
+		Result += TEXT("|------|--------|------|----------|-------|--------|-------|-------|\n");
+		for (const FTimelineAuditData& TL : Data.Timelines)
+		{
+			Result += FString::Printf(TEXT("| %s | %.2f | %s | %s | %d | %d | %d | %d |\n"),
+				*TL.Name, TL.Length,
+				TL.bLooping ? TEXT("Yes") : TEXT("No"),
+				TL.bAutoPlay ? TEXT("Yes") : TEXT("No"),
+				TL.FloatTrackCount, TL.VectorTrackCount,
+				TL.LinearColorTrackCount, TL.EventTrackCount);
+		}
 	}
-	Result->SetArrayField(TEXT("Timelines"), TimelinesArray);
 
 	// --- Widget Tree ---
 	if (Data.WidgetTree.IsSet())
 	{
-		Result->SetObjectField(TEXT("WidgetTree"), SerializeWidgetToJson(Data.WidgetTree.GetValue()));
+		Result += TEXT("\n## Widget Tree\n");
+		Result += SerializeWidgetToMarkdown(Data.WidgetTree.GetValue(), 0);
 	}
 
 	// --- Event Graphs ---
-	TArray<TSharedPtr<FJsonValue>> EventGraphs;
-	EventGraphs.Reserve(Data.EventGraphs.Num());
 	for (const FGraphAuditData& Graph : Data.EventGraphs)
 	{
-		EventGraphs.Add(MakeShareable(new FJsonValueObject(SerializeGraphToJson(Graph))));
+		Result += TEXT("\n");
+		Result += SerializeGraphToMarkdown(Graph, TEXT("EventGraph"));
 	}
-	Result->SetArrayField(TEXT("EventGraphs"), EventGraphs);
 
 	// --- Function Graphs ---
-	TArray<TSharedPtr<FJsonValue>> FunctionGraphs;
-	FunctionGraphs.Reserve(Data.FunctionGraphs.Num());
 	for (const FGraphAuditData& Graph : Data.FunctionGraphs)
 	{
-		FunctionGraphs.Add(MakeShareable(new FJsonValueObject(SerializeGraphToJson(Graph))));
+		Result += TEXT("\n");
+		Result += SerializeGraphToMarkdown(Graph, TEXT("Function"));
 	}
-	Result->SetArrayField(TEXT("FunctionGraphs"), FunctionGraphs);
 
-	// --- Macro Graphs (full topology, same format as event/function graphs) ---
-	TArray<TSharedPtr<FJsonValue>> MacroGraphs;
-	MacroGraphs.Reserve(Data.MacroGraphs.Num());
-	for (const FGraphAuditData& Macro : Data.MacroGraphs)
+	// --- Macro Graphs ---
+	for (const FGraphAuditData& Graph : Data.MacroGraphs)
 	{
-		MacroGraphs.Add(MakeShareable(new FJsonValueObject(SerializeGraphToJson(Macro))));
+		Result += TEXT("\n");
+		Result += SerializeGraphToMarkdown(Graph, TEXT("Macro"));
 	}
-	Result->SetArrayField(TEXT("MacroGraphs"), MacroGraphs);
 
 	return Result;
 }
 
-TSharedPtr<FJsonObject> FBlueprintAuditor::SerializeGraphToJson(const FGraphAuditData& Data)
+FString FBlueprintAuditor::SerializeGraphToMarkdown(const FGraphAuditData& Data, const FString& Prefix)
 {
-	TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject());
-	Result->SetStringField(TEXT("Name"), Data.Name);
+	FString Result;
+	Result.Reserve(2048);
 
-	// Function/macro signature
-	if (Data.Inputs.Num() > 0)
+	// --- Heading ---
+	if (Prefix == TEXT("Function"))
 	{
-		TArray<TSharedPtr<FJsonValue>> InputsArray;
-		InputsArray.Reserve(Data.Inputs.Num());
-		for (const FGraphParamData& Param : Data.Inputs)
+		// ## Function: Name(params) -> returns
+		Result += TEXT("## Function: ");
+		Result += Data.Name;
+		Result += TEXT("(");
+		for (int32 i = 0; i < Data.Inputs.Num(); ++i)
 		{
-			TSharedPtr<FJsonObject> ParamObj = MakeShareable(new FJsonObject());
-			ParamObj->SetStringField(TEXT("Name"), Param.Name);
-			ParamObj->SetStringField(TEXT("Type"), Param.Type);
-			InputsArray.Add(MakeShareable(new FJsonValueObject(ParamObj)));
+			if (i > 0) Result += TEXT(", ");
+			Result += Data.Inputs[i].Name;
+			Result += TEXT(": ");
+			Result += Data.Inputs[i].Type;
 		}
-		Result->SetArrayField(TEXT("Inputs"), InputsArray);
+		Result += TEXT(")");
+		if (Data.Outputs.Num() > 0)
+		{
+			Result += TEXT(" -> ");
+			for (int32 i = 0; i < Data.Outputs.Num(); ++i)
+			{
+				if (i > 0) Result += TEXT(", ");
+				Result += Data.Outputs[i].Name;
+				Result += TEXT(": ");
+				Result += Data.Outputs[i].Type;
+			}
+		}
+		Result += TEXT("\n");
+	}
+	else if (Prefix == TEXT("Macro"))
+	{
+		Result += TEXT("## Macro: ");
+		Result += Data.Name;
+		if (Data.Inputs.Num() > 0 || Data.Outputs.Num() > 0)
+		{
+			Result += TEXT("(");
+			for (int32 i = 0; i < Data.Inputs.Num(); ++i)
+			{
+				if (i > 0) Result += TEXT(", ");
+				Result += Data.Inputs[i].Name;
+				Result += TEXT(": ");
+				Result += Data.Inputs[i].Type;
+			}
+			Result += TEXT(")");
+			if (Data.Outputs.Num() > 0)
+			{
+				Result += TEXT(" -> ");
+				for (int32 i = 0; i < Data.Outputs.Num(); ++i)
+				{
+					if (i > 0) Result += TEXT(", ");
+					Result += Data.Outputs[i].Name;
+					Result += TEXT(": ");
+					Result += Data.Outputs[i].Type;
+				}
+			}
+		}
+		Result += TEXT("\n");
+	}
+	else
+	{
+		Result += FString::Printf(TEXT("## %s\n"), *Data.Name);
 	}
 
-	if (Data.Outputs.Num() > 0)
-	{
-		TArray<TSharedPtr<FJsonValue>> OutputsArray;
-		OutputsArray.Reserve(Data.Outputs.Num());
-		for (const FGraphParamData& Param : Data.Outputs)
-		{
-			TSharedPtr<FJsonObject> ParamObj = MakeShareable(new FJsonObject());
-			ParamObj->SetStringField(TEXT("Name"), Param.Name);
-			ParamObj->SetStringField(TEXT("Type"), Param.Type);
-			OutputsArray.Add(MakeShareable(new FJsonValueObject(ParamObj)));
-		}
-		Result->SetArrayField(TEXT("Outputs"), OutputsArray);
-	}
-
-	// Nodes
+	// --- Node table ---
 	if (Data.Nodes.Num() > 0)
 	{
-		TArray<TSharedPtr<FJsonValue>> NodesArray;
-		NodesArray.Reserve(Data.Nodes.Num());
-		for (const FNodeAuditData& NodeData : Data.Nodes)
+		Result += TEXT("| Id | Type | Name | Details |\n");
+		Result += TEXT("|----|------|------|---------|\n");
+		for (const FNodeAuditData& Node : Data.Nodes)
 		{
-			TSharedPtr<FJsonObject> NodeObj = MakeShareable(new FJsonObject());
-			NodeObj->SetNumberField(TEXT("Id"), NodeData.Id);
-			NodeObj->SetStringField(TEXT("Type"), NodeData.Type);
-			NodeObj->SetStringField(TEXT("Name"), NodeData.Name);
-
-			if (!NodeData.Target.IsEmpty())
+			// Build Details column: target, flags, defaults
+			FString Details;
+			if (!Node.Target.IsEmpty())
 			{
-				NodeObj->SetStringField(TEXT("Target"), NodeData.Target);
+				Details += Node.Target;
 			}
-			if (!NodeData.bIsNative && NodeData.Type == TEXT("CallFunction"))
+			if (Node.bPure)
 			{
-				NodeObj->SetBoolField(TEXT("IsNative"), false);
+				if (!Details.IsEmpty()) Details += TEXT(", ");
+				Details += TEXT("pure");
 			}
-			if (NodeData.bPure)
+			if (Node.bLatent)
 			{
-				NodeObj->SetBoolField(TEXT("Pure"), true);
+				if (!Details.IsEmpty()) Details += TEXT(", ");
+				Details += TEXT("latent");
 			}
-			if (NodeData.bLatent)
+			if (!Node.bIsNative && Node.Type == TEXT("CallFunction"))
 			{
-				NodeObj->SetBoolField(TEXT("Latent"), true);
+				if (!Details.IsEmpty()) Details += TEXT(", ");
+				Details += TEXT("not-native");
 			}
-			if (NodeData.DefaultInputs.Num() > 0)
+			if (Node.DefaultInputs.Num() > 0)
 			{
-				TArray<TSharedPtr<FJsonValue>> DefaultInputs;
-				DefaultInputs.Reserve(NodeData.DefaultInputs.Num());
-				for (const FDefaultInputData& Input : NodeData.DefaultInputs)
+				for (const FDefaultInputData& Input : Node.DefaultInputs)
 				{
-					TSharedPtr<FJsonObject> PinObj = MakeShareable(new FJsonObject());
-					PinObj->SetStringField(TEXT("Name"), Input.Name);
-					PinObj->SetStringField(TEXT("Value"), Input.Value);
-					DefaultInputs.Add(MakeShareable(new FJsonValueObject(PinObj)));
+					if (!Details.IsEmpty()) Details += TEXT(", ");
+					Details += FString::Printf(TEXT("%s=%s"), *Input.Name, *Input.Value);
 				}
-				NodeObj->SetArrayField(TEXT("DefaultInputs"), DefaultInputs);
 			}
-
-			NodesArray.Add(MakeShareable(new FJsonValueObject(NodeObj)));
+			Result += FString::Printf(TEXT("| %d | %s | %s | %s |\n"),
+				Node.Id, *Node.Type, *Node.Name, *Details);
 		}
-		Result->SetArrayField(TEXT("Nodes"), NodesArray);
 	}
 
-	// V3 Topology: ExecFlows
+	// --- Exec edges (compact one-liners) ---
 	if (Data.ExecFlows.Num() > 0)
 	{
-		TArray<TSharedPtr<FJsonValue>> ExecArray;
-		ExecArray.Reserve(Data.ExecFlows.Num());
-		for (const FExecEdge& Edge : Data.ExecFlows)
+		Result += TEXT("\nExec: ");
+		for (int32 i = 0; i < Data.ExecFlows.Num(); ++i)
 		{
-			TSharedPtr<FJsonObject> EdgeObj = MakeShareable(new FJsonObject());
-			EdgeObj->SetNumberField(TEXT("Src"), Edge.SourceNodeId);
-			EdgeObj->SetStringField(TEXT("SrcPin"), Edge.SourcePinName);
-			EdgeObj->SetNumberField(TEXT("Dst"), Edge.TargetNodeId);
-			ExecArray.Add(MakeShareable(new FJsonValueObject(EdgeObj)));
+			if (i > 0) Result += TEXT(", ");
+			const FExecEdge& Edge = Data.ExecFlows[i];
+			// Omit pin name when it's "then" (case-insensitive)
+			if (Edge.SourcePinName.Equals(TEXT("then"), ESearchCase::IgnoreCase))
+			{
+				Result += FString::Printf(TEXT("%d->%d"), Edge.SourceNodeId, Edge.TargetNodeId);
+			}
+			else
+			{
+				Result += FString::Printf(TEXT("%d-[%s]->%d"),
+					Edge.SourceNodeId, *Edge.SourcePinName, Edge.TargetNodeId);
+			}
 		}
-		Result->SetArrayField(TEXT("ExecFlows"), ExecArray);
+		Result += TEXT("\n");
 	}
 
-	// V3 Topology: DataFlows
+	// --- Data edges (compact one-liners) ---
 	if (Data.DataFlows.Num() > 0)
 	{
-		TArray<TSharedPtr<FJsonValue>> DataArray;
-		DataArray.Reserve(Data.DataFlows.Num());
-		for (const FDataEdge& Edge : Data.DataFlows)
+		Result += TEXT("Data: ");
+		for (int32 i = 0; i < Data.DataFlows.Num(); ++i)
 		{
-			TSharedPtr<FJsonObject> EdgeObj = MakeShareable(new FJsonObject());
-			EdgeObj->SetNumberField(TEXT("Src"), Edge.SourceNodeId);
-			EdgeObj->SetStringField(TEXT("SrcPin"), Edge.SourcePinName);
-			EdgeObj->SetNumberField(TEXT("Dst"), Edge.TargetNodeId);
-			EdgeObj->SetStringField(TEXT("DstPin"), Edge.TargetPinName);
-			DataArray.Add(MakeShareable(new FJsonValueObject(EdgeObj)));
+			if (i > 0) Result += TEXT(", ");
+			const FDataEdge& Edge = Data.DataFlows[i];
+			Result += FString::Printf(TEXT("%d.%s->%d.%s"),
+				Edge.SourceNodeId, *Edge.SourcePinName,
+				Edge.TargetNodeId, *Edge.TargetPinName);
 		}
-		Result->SetArrayField(TEXT("DataFlows"), DataArray);
+		Result += TEXT("\n");
 	}
 
 	return Result;
 }
 
-TSharedPtr<FJsonObject> FBlueprintAuditor::SerializeWidgetToJson(const FWidgetAuditData& Data)
+FString FBlueprintAuditor::SerializeWidgetToMarkdown(const FWidgetAuditData& Data, int32 Indent)
 {
-	TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject());
+	FString Result;
 
-	Result->SetStringField(TEXT("Name"), Data.Name);
-	Result->SetStringField(TEXT("Class"), Data.Class);
-	Result->SetBoolField(TEXT("IsVariable"), Data.bIsVariable);
-
-	if (Data.Children.Num() > 0)
+	// Build indent string (two spaces per level)
+	FString IndentStr;
+	for (int32 i = 0; i < Indent; ++i)
 	{
-		TArray<TSharedPtr<FJsonValue>> ChildrenArray;
-		ChildrenArray.Reserve(Data.Children.Num());
-		for (const FWidgetAuditData& Child : Data.Children)
-		{
-			ChildrenArray.Add(MakeShareable(new FJsonValueObject(SerializeWidgetToJson(Child))));
-		}
-		Result->SetArrayField(TEXT("Children"), ChildrenArray);
+		IndentStr += TEXT("  ");
+	}
+
+	Result += IndentStr;
+	Result += FString::Printf(TEXT("- %s (%s)"), *Data.Name, *Data.Class);
+	if (Data.bIsVariable)
+	{
+		Result += TEXT(" [var]");
+	}
+	Result += TEXT("\n");
+
+	for (const FWidgetAuditData& Child : Data.Children)
+	{
+		Result += SerializeWidgetToMarkdown(Child, Indent + 1);
 	}
 
 	return Result;
@@ -735,19 +761,19 @@ TSharedPtr<FJsonObject> FBlueprintAuditor::SerializeWidgetToJson(const FWidgetAu
 // Legacy synchronous API (thin wrappers over Gather + Serialize)
 // ============================================================================
 
-TSharedPtr<FJsonObject> FBlueprintAuditor::AuditBlueprint(const UBlueprint* BP)
+FString FBlueprintAuditor::AuditBlueprint(const UBlueprint* BP)
 {
-	return SerializeToJson(GatherBlueprintData(BP));
+	return SerializeToMarkdown(GatherBlueprintData(BP));
 }
 
-TSharedPtr<FJsonObject> FBlueprintAuditor::AuditGraph(const UEdGraph* Graph)
+FString FBlueprintAuditor::AuditGraph(const UEdGraph* Graph)
 {
-	return SerializeGraphToJson(GatherGraphData(Graph));
+	return SerializeGraphToMarkdown(GatherGraphData(Graph), TEXT("EventGraph"));
 }
 
-TSharedPtr<FJsonObject> FBlueprintAuditor::AuditWidget(UWidget* Widget)
+FString FBlueprintAuditor::AuditWidget(UWidget* Widget)
 {
-	return SerializeWidgetToJson(GatherWidgetData(Widget));
+	return SerializeWidgetToMarkdown(GatherWidgetData(Widget));
 }
 
 // ============================================================================
@@ -814,24 +840,24 @@ FString FBlueprintAuditor::GetAuditOutputPath(const FString& PackageName)
 		RelativePath.RightChopInline(GamePrefix.Len());
 	}
 
-	return GetAuditBaseDir() / RelativePath + TEXT(".json");
+	return GetAuditBaseDir() / RelativePath + TEXT(".md");
 }
 
-bool FBlueprintAuditor::DeleteAuditJson(const FString& JsonPath)
+bool FBlueprintAuditor::DeleteAuditFile(const FString& FilePath)
 {
 	IFileManager& FM = IFileManager::Get();
-	if (!FM.FileExists(*JsonPath))
+	if (!FM.FileExists(*FilePath))
 	{
 		return true;
 	}
 
-	if (FM.Delete(*JsonPath))
+	if (FM.Delete(*FilePath))
 	{
-		UE_LOG(LogCoRider, Display, TEXT("CoRider: Deleted audit JSON %s"), *JsonPath);
+		UE_LOG(LogCoRider, Display, TEXT("CoRider: Deleted audit file %s"), *FilePath);
 		return true;
 	}
 
-	UE_LOG(LogCoRider, Warning, TEXT("CoRider: Failed to delete audit JSON %s"), *JsonPath);
+	UE_LOG(LogCoRider, Warning, TEXT("CoRider: Failed to delete audit file %s"), *FilePath);
 	return false;
 }
 
@@ -857,13 +883,9 @@ FString FBlueprintAuditor::ComputeFileHash(const FString& FilePath)
 	return FString();
 }
 
-bool FBlueprintAuditor::WriteAuditJson(const TSharedPtr<FJsonObject>& JsonObject, const FString& OutputPath)
+bool FBlueprintAuditor::WriteAuditFile(const FString& Content, const FString& OutputPath)
 {
-	FString OutputString;
-	const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&OutputString);
-	FJsonSerializer::Serialize(JsonObject.ToSharedRef(), Writer);
-
-	if (FFileHelper::SaveStringToFile(OutputString, *OutputPath))
+	if (FFileHelper::SaveStringToFile(Content, *OutputPath))
 	{
 		UE_LOG(LogCoRider, Verbose, TEXT("CoRider: Audit saved to %s"), *OutputPath);
 		return true;

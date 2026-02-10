@@ -1,10 +1,10 @@
 # CoRider-UnrealEngine
 
-An Unreal Engine editor plugin that exports Blueprint asset summaries to JSON for external analysis, diffing, and LLM integration.
+An Unreal Engine editor plugin that exports Blueprint asset summaries to Markdown for external analysis, diffing, and LLM integration.
 
 ## Features
 
-- **JSON Export**: Extracts comprehensive Blueprint metadata including variables, components, event graphs, function calls, and widget trees
+- **Markdown Export**: Extracts comprehensive Blueprint metadata including variables, components, event graphs, function calls, and widget trees into a token-efficient Markdown format
 - **Commandlet Support**: Run audits from command line without opening the editor UI
 - **On-Save Hooks**: Automatically re-audit Blueprints when saved (via editor subsystem)
 - **Staleness Detection**: Includes source file hashes for detecting when audit data is out of date
@@ -38,15 +38,15 @@ UnrealEditor-Cmd.exe "path/to/Project.uproject" -run=BlueprintAudit -unattended 
 Audit a single Blueprint:
 
 ```bash
-UnrealEditor-Cmd.exe "path/to/Project.uproject" -run=BlueprintAudit -AssetPath=/Game/UI/WBP_MainMenu -Output=audit.json
+UnrealEditor-Cmd.exe "path/to/Project.uproject" -run=BlueprintAudit -AssetPath=/Game/UI/WBP_MainMenu -Output=audit.md
 ```
 
 ### Output Location
 
-- **All Blueprints**: `<ProjectDir>/Saved/Audit/v<N>/Blueprints/<relative_path>.json`
-- **Single Blueprint**: Specified via `-Output` or defaults to `<ProjectDir>/BlueprintAudit.json`
+- **All Blueprints**: `<ProjectDir>/Saved/Audit/v<N>/Blueprints/<relative_path>.md`
+- **Single Blueprint**: Specified via `-Output` or defaults to `<ProjectDir>/BlueprintAudit.md`
 
-The `v<N>` segment is the audit schema version (`FBlueprintAuditor::AuditSchemaVersion`). When the version is bumped, all cached JSON is automatically invalidated because no files exist at the new path.
+The `v<N>` segment is the audit schema version (`FBlueprintAuditor::AuditSchemaVersion`). When the version is bumped, all cached files are automatically invalidated because no files exist at the new path.
 
 > **TODO:** Add automatic cleanup of old `Saved/Audit/v<old>/` directories on startup.
 
@@ -54,127 +54,94 @@ The `v<N>` segment is the audit schema version (`FBlueprintAuditor::AuditSchemaV
 
 When the editor is running, the `UBlueprintAuditSubsystem` automatically re-audits Blueprints when they are saved.
 
-## JSON Output Schema
+## Markdown Output Format
 
-```json
-{
-  "Name": "WBP_MainMenu",
-  "Path": "/Game/UI/WBP_MainMenu.WBP_MainMenu",
-  "ParentClass": "/Script/CommonUI.CommonActivatableWidget",
-  "BlueprintType": "Normal",
-  "SourceFileHash": "a1b2c3d4e5f6...",
+The audit output is Markdown, optimized for LLM consumption (more token-efficient than JSON). Sections with no data are omitted entirely.
 
-  "Variables": [
-    {
-      "Name": "PlayerName",
-      "Type": "String",
-      "Category": "Default",
-      "InstanceEditable": true,
-      "Replicated": false
-    }
-  ],
+````markdown
+# WBP_MainMenu
+Path: /Game/UI/WBP_MainMenu.WBP_MainMenu
+Parent: /Script/CommonUI.CommonActivatableWidget
+Type: Normal
+Hash: fe020519d8ca4cf5b2e8690bd0bfabca
 
-  "PropertyOverrides": [
-    {"Name": "bAutoActivate", "Value": "True"}
-  ],
+## Variables
+| Name | Type | Category | Editable | Replicated |
+|------|------|----------|----------|------------|
+| PlayerName | String | Default | Yes | No |
 
-  "Interfaces": ["IMenuInterface"],
+## Property Overrides
+- bAutoActivate = True
 
-  "Components": [
-    {"Name": "RootComponent", "Class": "SceneComponent"}
-  ],
+## Interfaces
+- IMenuInterface
 
-  "Timelines": [
-    {
-      "Name": "FadeTimeline",
-      "Length": 2.0,
-      "Looping": false,
-      "AutoPlay": false,
-      "FloatTrackCount": 1,
-      "VectorTrackCount": 0,
-      "LinearColorTrackCount": 0,
-      "EventTrackCount": 0
-    }
-  ],
+## Components
+| Name | Class |
+|------|-------|
+| RootComponent | SceneComponent |
 
-  "WidgetTree": {
-    "Name": "CanvasPanel_0",
-    "Class": "CanvasPanel",
-    "IsVariable": false,
-    "Children": [...]
-  },
+## Timelines
+| Name | Length | Loop | AutoPlay | Float | Vector | Color | Event |
+|------|--------|------|----------|-------|--------|-------|-------|
+| FadeTimeline | 2.00 | No | No | 1 | 0 | 0 | 0 |
 
-  "EventGraphs": [
-    {
-      "Name": "EventGraph",
-      "Nodes": [
-        {"Id": 0, "Type": "Event", "Name": "Event BeginPlay"},
-        {"Id": 1, "Type": "CallFunction", "Name": "IsValid", "Target": "KismetSystemLibrary", "Pure": true},
-        {"Id": 2, "Type": "Branch", "Name": "Branch"},
-        {"Id": 3, "Type": "CallFunction", "Name": "PlayAnimation", "Target": "UserWidget", "IsNative": false},
-        {"Id": 4, "Type": "VariableGet", "Name": "PlayerName", "Pure": true},
-        {"Id": 5, "Type": "VariableSet", "Name": "bIsActive"}
-      ],
-      "ExecFlows": [
-        {"Src": 0, "SrcPin": "Then", "Dst": 2},
-        {"Src": 2, "SrcPin": "True", "Dst": 3},
-        {"Src": 2, "SrcPin": "False", "Dst": 5}
-      ],
-      "DataFlows": [
-        {"Src": 4, "SrcPin": "PlayerName", "Dst": 1, "DstPin": "Object"},
-        {"Src": 1, "SrcPin": "ReturnValue", "Dst": 2, "DstPin": "Condition"}
-      ]
-    }
-  ],
+## Widget Tree
+- CanvasPanel_0 (CanvasPanel)
+  - Button_Start (Button) [var]
+  - Text_Title (TextBlock)
 
-  "FunctionGraphs": [
-    {
-      "Name": "GetFormattedName",
-      "Inputs": [{"Name": "Prefix", "Type": "String"}],
-      "Outputs": [{"Name": "ReturnValue", "Type": "String"}],
-      "Nodes": [
-        {"Id": 0, "Type": "FunctionEntry", "Name": "GetFormattedName"},
-        {"Id": 1, "Type": "CallFunction", "Name": "Concat_StrStr", "Target": "KismetStringLibrary", "Pure": true},
-        {"Id": 2, "Type": "VariableGet", "Name": "PlayerName", "Pure": true},
-        {"Id": 3, "Type": "FunctionResult", "Name": "Return"}
-      ],
-      "ExecFlows": [
-        {"Src": 0, "SrcPin": "Then", "Dst": 3}
-      ],
-      "DataFlows": [
-        {"Src": 0, "SrcPin": "Prefix", "Dst": 1, "DstPin": "A"},
-        {"Src": 2, "SrcPin": "PlayerName", "Dst": 1, "DstPin": "B"},
-        {"Src": 1, "SrcPin": "ReturnValue", "Dst": 3, "DstPin": "ReturnValue"}
-      ]
-    }
-  ],
+## EventGraph
+| Id | Type | Name | Details |
+|----|------|------|---------|
+| 0 | Event | Event BeginPlay | |
+| 1 | CallFunction | IsValid | KismetSystemLibrary, pure |
+| 2 | Branch | Branch | |
+| 3 | CallFunction | PlayAnimation | UserWidget, not-native |
+| 4 | VariableGet | PlayerName | pure |
+| 5 | VariableSet | bIsActive | |
 
-  "MacroGraphs": [...]
-}
-```
+Exec: 0->2, 2-[True]->3, 2-[False]->5
+Data: 4.PlayerName->1.Object, 1.ReturnValue->2.Condition
 
-### Graph Fields
+## Function: GetFormattedName(Prefix: String) -> ReturnValue: String
+| Id | Type | Name | Details |
+|----|------|------|---------|
+| 0 | FunctionEntry | GetFormattedName | |
+| 1 | CallFunction | Concat_StrStr | KismetStringLibrary, pure |
+| 2 | VariableGet | PlayerName | pure |
+| 3 | FunctionResult | Return | |
 
-Each graph object (in EventGraphs, FunctionGraphs, MacroGraphs) contains:
+Exec: 0->3
+Data: 0.Prefix->1.A, 2.PlayerName->1.B, 1.ReturnValue->3.ReturnValue
+````
 
-| Field | Description |
-|-------|-------------|
-| `Name` | Graph name. |
-| `Inputs` | Function/macro input parameters (`Name`, `Type`). Only present for function and macro graphs. |
-| `Outputs` | Function/macro output/return parameters (`Name`, `Type`). Only present when the function has return values. |
-| `Nodes` | Sequential node list with `Id`, `Type`, `Name`. Optional: `Target` (owning class for CallFunction), `IsNative` (only when false, since most calls are native), `Pure`/`Latent` (only when true), `DefaultInputs` (only when non-empty). |
-| `ExecFlows` | Execution edges. Keys: `Src` (source node ID), `SrcPin` (e.g. "Then", "True", "False"), `Dst` (target node ID). |
-| `DataFlows` | Data dependency edges. Keys: `Src`, `SrcPin` (e.g. "ReturnValue"), `Dst`, `DstPin` (e.g. "Condition"). |
+### Format Details
 
-Node types: `FunctionEntry`, `FunctionResult`, `Event`, `CustomEvent`, `CallFunction`, `Branch`, `Sequence`, `VariableGet`, `VariableSet`, `MacroInstance`, `Timeline`, `Other`.
+**Header lines**: Name (H1 heading), Path, Parent, Type, Hash. Used for staleness detection and quick identification.
 
-Reroute/knot nodes are skipped; edges trace through them to the real endpoints. All arrays are omitted when empty.
+**Node tables** use `| Id | Type | Name | Details |` columns. The Details column contains target class, flags (pure, latent, not-native), and hardcoded default input values.
+
+**Edge one-liners**: Compact notation after each node table.
+- Exec edges: `SrcId-[PinName]->DstId`. Pin name omitted when it is "then": `0->1`.
+- Data edges: `SrcId.PinName->DstId.PinName`.
+
+**Graph headings**:
+- Event graphs: `## EventGraph` (or the graph name)
+- Functions: `## Function: Name(params) -> returns`
+- Macros: `## Macro: Name`
+
+**Widget tree**: Indented list with `[var]` suffix for variable widgets.
+
+**Node types**: `FunctionEntry`, `FunctionResult`, `Event`, `CustomEvent`, `CallFunction`, `Branch`, `Sequence`, `VariableGet`, `VariableSet`, `MacroInstance`, `Timeline`, `Other`.
+
+Reroute/knot nodes are skipped; edges trace through them to the real endpoints.
 
 ## Integration with Rider Plugin
 
 This plugin is designed to work with the companion Rider plugin (`CoRider`). The Rider plugin:
 
-1. Detects when audit data is stale by comparing `SourceFileHash` with current file hashes
+1. Detects when audit data is stale by comparing the `Hash` header field with current file hashes
 2. Automatically triggers the commandlet to refresh stale data
 3. Exposes audit data via HTTP endpoints for LLM integration
 
@@ -196,14 +163,14 @@ CoRider-UnrealEngine/
     │   └── BlueprintAuditSubsystem.h          # Editor subsystem header
     └── Private/
         ├── CoRiderUnrealEngineModule.cpp      # Module startup/shutdown
-        ├── BlueprintAuditor.cpp               # JSON serialization of Blueprint internals
+        ├── BlueprintAuditor.cpp               # Markdown serialization of Blueprint internals
         ├── BlueprintAuditCommandlet.cpp        # Headless batch audit entry point
         └── BlueprintAuditSubsystem.cpp         # On-save hooks + startup stale check
 ```
 
 ### Core Files
 
-- **`BlueprintAuditor.cpp`**: The heart of the plugin. Given a `UBlueprint*`, extracts variables, components, event graphs, function calls, widget trees, property overrides, and interfaces into a JSON object. Also computes `SourceFileHash` (MD5 of the `.uasset`) for staleness detection.
+- **`BlueprintAuditor.cpp`**: The heart of the plugin. Given a `UBlueprint*`, extracts variables, components, event graphs, function calls, widget trees, property overrides, and interfaces into Markdown. Also computes a file hash (MD5 of the `.uasset`) for staleness detection.
 - **`BlueprintAuditCommandlet.cpp`**: CLI entry point (`-run=BlueprintAudit`). Supports two modes: audit a single asset (`-AssetPath=...`) or audit all `/Game/` Blueprints. Designed for headless CI runs and for the Rider plugin to trigger remotely.
 - **`BlueprintAuditSubsystem.cpp`**: `UEditorSubsystem` that hooks `PackageSavedWithContextEvent` for automatic re-audit on save. Also runs a deferred stale check on editor startup.
 
@@ -234,7 +201,7 @@ Verify output at `<ProjectDir>/Saved/Audit/v<N>/Blueprints/`.
 
 1. Open the UE project in the editor (with the plugin installed).
 2. Open and save a Blueprint asset.
-3. Check that the corresponding JSON file in `Saved/Audit/v<N>/Blueprints/` was updated.
+3. Check that the corresponding `.md` file in `Saved/Audit/v<N>/Blueprints/` was updated.
 
 ### Testing with the Rider plugin
 
@@ -247,8 +214,8 @@ Verify output at `<ProjectDir>/Saved/Audit/v<N>/Blueprints/`.
 
 This plugin works with the companion [CoRider](https://github.com/kvirani/CoRider) Rider plugin. When modifying the audit JSON schema, keep these in sync:
 
-- **Audit schema version**: `FBlueprintAuditor::AuditSchemaVersion` in `BlueprintAuditor.h` (this repo) must match `BlueprintAuditService.AuditSchemaVersion` in the Rider repo. Bump both together when the JSON schema changes.
-- **Audit output path**: `Saved/Audit/v<N>/Blueprints/...`. The `v<N>` version segment invalidates cached JSON automatically. Both sides must agree on this path structure.
+- **Audit schema version**: `FBlueprintAuditor::AuditSchemaVersion` in `BlueprintAuditor.h` (this repo) must match `BlueprintAuditService.AuditSchemaVersion` in the Rider repo. Bump both together when the audit format changes.
+- **Audit output path**: `Saved/Audit/v<N>/Blueprints/...`. The `v<N>` version segment invalidates cached files automatically. Both sides must agree on this path structure.
 - **Commandlet name**: `BlueprintAudit`, hardcoded on both sides. The Rider plugin invokes `UnrealEditor-Cmd.exe -run=BlueprintAudit`.
 
 ## Important Notes
@@ -262,7 +229,7 @@ This plugin works with the companion [CoRider](https://github.com/kvirani/CoRide
 
 - Core, CoreUObject, Engine
 - AssetRegistry, BlueprintGraph, UnrealEd
-- Json
+- Json (private, used by AssetRefHttpServer)
 - Slate, SlateCore
 - UMG, UMGEditor
 

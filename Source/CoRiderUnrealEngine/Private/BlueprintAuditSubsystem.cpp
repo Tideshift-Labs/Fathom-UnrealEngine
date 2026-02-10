@@ -3,12 +3,10 @@
 #include "BlueprintAuditor.h"
 #include "Async/Async.h"
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "Dom/JsonObject.h"
 #include "Engine/Blueprint.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
-#include "Serialization/JsonSerializer.h"
 #include "UObject/ObjectSaveContext.h"
 
 void UBlueprintAuditSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -143,8 +141,8 @@ void UBlueprintAuditSubsystem::OnAssetRemoved(const FAssetData& AssetData)
 		return;
 	}
 
-	const FString JsonPath = FBlueprintAuditor::GetAuditOutputPath(PackageName);
-	FBlueprintAuditor::DeleteAuditJson(JsonPath);
+	const FString AuditPath = FBlueprintAuditor::GetAuditOutputPath(PackageName);
+	FBlueprintAuditor::DeleteAuditFile(AuditPath);
 }
 
 void UBlueprintAuditSubsystem::OnAssetRenamed(const FAssetData& AssetData, const FString& OldObjectPath)
@@ -160,8 +158,8 @@ void UBlueprintAuditSubsystem::OnAssetRenamed(const FAssetData& AssetData, const
 		return;
 	}
 
-	const FString OldJsonPath = FBlueprintAuditor::GetAuditOutputPath(OldPackageName);
-	FBlueprintAuditor::DeleteAuditJson(OldJsonPath);
+	const FString OldAuditPath = FBlueprintAuditor::GetAuditOutputPath(OldPackageName);
+	FBlueprintAuditor::DeleteAuditFile(OldAuditPath);
 }
 
 bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
@@ -204,7 +202,7 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 			FStaleCheckEntry Entry;
 			Entry.PackageName = PackageName;
 			Entry.SourcePath = FBlueprintAuditor::GetSourceFilePath(PackageName);
-			Entry.JsonPath = FBlueprintAuditor::GetAuditOutputPath(PackageName);
+			Entry.AuditPath = FBlueprintAuditor::GetAuditOutputPath(PackageName);
 			StaleCheckEntries.Add(MoveTemp(Entry));
 		}
 
@@ -231,16 +229,22 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 					continue;
 				}
 
-				// Read stored hash from existing JSON (if any)
+				// Read stored hash from the markdown audit file's "Hash: " header line
 				FString StoredHash;
-				FString JsonString;
-				if (FFileHelper::LoadFileToString(JsonString, *Entry.JsonPath))
+				FString FileContent;
+				if (FFileHelper::LoadFileToString(FileContent, *Entry.AuditPath))
 				{
-					TSharedPtr<FJsonObject> ExistingJson;
-					const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonString);
-					if (FJsonSerializer::Deserialize(Reader, ExistingJson) && ExistingJson.IsValid())
+					const FString HashPrefix = TEXT("Hash: ");
+					int32 Pos = FileContent.Find(HashPrefix);
+					if (Pos != INDEX_NONE)
 					{
-						StoredHash = ExistingJson->GetStringField(TEXT("SourceFileHash"));
+						Pos += HashPrefix.Len();
+						int32 EndPos = FileContent.Find(TEXT("\n"), ESearchCase::CaseSensitive, ESearchDir::FromStart, Pos);
+						if (EndPos == INDEX_NONE)
+						{
+							EndPos = FileContent.Len();
+						}
+						StoredHash = FileContent.Mid(Pos, EndPos - Pos).TrimEnd();
 					}
 				}
 
@@ -361,8 +365,8 @@ void UBlueprintAuditSubsystem::DispatchBackgroundWrite(FBlueprintAuditData&& Dat
 	TFuture<void> Future = Async(EAsyncExecution::ThreadPool,
 		[this, MovedData = MoveTemp(Data), PackageName, OutputPath]()
 		{
-			const TSharedPtr<FJsonObject> Json = FBlueprintAuditor::SerializeToJson(MovedData);
-			FBlueprintAuditor::WriteAuditJson(Json, OutputPath);
+			const FString Markdown = FBlueprintAuditor::SerializeToMarkdown(MovedData);
+			FBlueprintAuditor::WriteAuditFile(Markdown, OutputPath);
 
 			// Remove from in-flight set
 			FScopeLock Lock(&InFlightLock);
@@ -384,10 +388,10 @@ void UBlueprintAuditSubsystem::SweepOrphanedAuditFiles()
 {
 	const FString BaseDir = FBlueprintAuditor::GetAuditBaseDir();
 
-	TArray<FString> JsonFiles;
-	IFileManager::Get().FindFilesRecursive(JsonFiles, *BaseDir, TEXT("*.json"), true, false);
+	TArray<FString> AuditFiles;
+	IFileManager::Get().FindFilesRecursive(AuditFiles, *BaseDir, TEXT("*.md"), true, false);
 
-	if (JsonFiles.IsEmpty())
+	if (AuditFiles.IsEmpty())
 	{
 		return;
 	}
@@ -395,11 +399,11 @@ void UBlueprintAuditSubsystem::SweepOrphanedAuditFiles()
 	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
 
 	int32 SweptCount = 0;
-	for (const FString& JsonFile : JsonFiles)
+	for (const FString& AuditFile : AuditFiles)
 	{
 		// Convert absolute path back to a package name:
-		// Strip the base dir prefix and .json suffix, then prepend /Game/
-		FString RelPath = JsonFile;
+		// Strip the base dir prefix and .md suffix, then prepend /Game/
+		FString RelPath = AuditFile;
 		if (!RelPath.StartsWith(BaseDir))
 		{
 			continue;
@@ -412,10 +416,10 @@ void UBlueprintAuditSubsystem::SweepOrphanedAuditFiles()
 			RelPath.RightChopInline(1);
 		}
 
-		// Remove .json suffix
-		if (RelPath.EndsWith(TEXT(".json")))
+		// Remove .md suffix
+		if (RelPath.EndsWith(TEXT(".md")))
 		{
-			RelPath.LeftChopInline(5);
+			RelPath.LeftChopInline(3);
 		}
 
 		// Normalize separators for the package path
@@ -427,7 +431,7 @@ void UBlueprintAuditSubsystem::SweepOrphanedAuditFiles()
 		AssetRegistry.GetAssetsByPackageName(FName(*PackageName), Assets, true);
 		if (Assets.IsEmpty())
 		{
-			FBlueprintAuditor::DeleteAuditJson(JsonFile);
+			FBlueprintAuditor::DeleteAuditFile(AuditFile);
 			++SweptCount;
 		}
 	}

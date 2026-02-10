@@ -1,7 +1,6 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Dom/JsonObject.h"
 
 class UBlueprint;
 class UEdGraph;
@@ -136,8 +135,8 @@ struct FBlueprintAuditData
  */
 struct CORIDERUNREALENGINE_API FBlueprintAuditor
 {
-	/** Bump when the JSON schema changes to invalidate all cached audit files. */
-	static constexpr int32 AuditSchemaVersion = 3;
+	/** Bump when the audit format changes to invalidate all cached audit files. */
+	static constexpr int32 AuditSchemaVersion = 4;
 
 	// --- Game-thread gather (reads UObject pointers, populates POD structs) ---
 
@@ -150,43 +149,43 @@ struct CORIDERUNREALENGINE_API FBlueprintAuditor
 	/** Gather audit data from a widget and its children. Must be called on the game thread. */
 	static FWidgetAuditData GatherWidgetData(class UWidget* Widget);
 
-	// --- Thread-safe serialization (POD to JSON, no UObject access) ---
+	// --- Thread-safe serialization (POD to Markdown, no UObject access) ---
 
-	/** Serialize gathered Blueprint data to JSON. Computes SourceFileHash from SourceFilePath. Safe on any thread. */
-	static TSharedPtr<FJsonObject> SerializeToJson(const FBlueprintAuditData& Data);
+	/** Serialize gathered Blueprint data to Markdown. Computes SourceFileHash from SourceFilePath. Safe on any thread. */
+	static FString SerializeToMarkdown(const FBlueprintAuditData& Data);
 
-	/** Serialize gathered graph data to JSON. Safe on any thread. */
-	static TSharedPtr<FJsonObject> SerializeGraphToJson(const FGraphAuditData& Data);
+	/** Serialize gathered graph data to Markdown. Safe on any thread. */
+	static FString SerializeGraphToMarkdown(const FGraphAuditData& Data, const FString& Prefix);
 
-	/** Serialize gathered widget data to JSON. Safe on any thread. */
-	static TSharedPtr<FJsonObject> SerializeWidgetToJson(const FWidgetAuditData& Data);
+	/** Serialize gathered widget data to a Markdown indented list. Safe on any thread. */
+	static FString SerializeWidgetToMarkdown(const FWidgetAuditData& Data, int32 Indent = 0);
 
 	// --- Legacy synchronous API (used by Commandlet and as a convenience wrapper) ---
 
-	/** Produce a JSON object summarizing the given Blueprint. Equivalent to SerializeToJson(GatherBlueprintData(BP)). */
-	static TSharedPtr<FJsonObject> AuditBlueprint(const UBlueprint* BP);
+	/** Produce a Markdown string summarizing the given Blueprint. Equivalent to SerializeToMarkdown(GatherBlueprintData(BP)). */
+	static FString AuditBlueprint(const UBlueprint* BP);
 
-	/** Produce a JSON object summarizing a single graph. */
-	static TSharedPtr<FJsonObject> AuditGraph(const UEdGraph* Graph);
+	/** Produce a Markdown string summarizing a single graph. */
+	static FString AuditGraph(const UEdGraph* Graph);
 
-	/** Produce a JSON object summarizing a single widget and its children. */
-	static TSharedPtr<FJsonObject> AuditWidget(class UWidget* Widget);
+	/** Produce a Markdown string summarizing a single widget and its children. */
+	static FString AuditWidget(class UWidget* Widget);
 
 	/** Human-readable type string for a Blueprint variable pin type. */
 	static FString GetVariableTypeString(const FEdGraphPinType& PinType);
 
-	/** Return the base directory for all audit JSON files: <ProjectDir>/Saved/Audit/v<N>/Blueprints */
+	/** Return the base directory for all audit files: <ProjectDir>/Saved/Audit/v<N>/Blueprints */
 	static FString GetAuditBaseDir();
 
 	/**
-	 * Compute the on-disk output path for a Blueprint's audit JSON.
-	 * e.g. /Game/UI/Widgets/WBP_Foo  ->  <ProjectDir>/Saved/Audit/v<N>/Blueprints/UI/Widgets/WBP_Foo.json
+	 * Compute the on-disk output path for a Blueprint's audit file.
+	 * e.g. /Game/UI/Widgets/WBP_Foo  ->  <ProjectDir>/Saved/Audit/v<N>/Blueprints/UI/Widgets/WBP_Foo.md
 	 */
 	static FString GetAuditOutputPath(const UBlueprint* BP);
 	static FString GetAuditOutputPath(const FString& PackageName);
 
-	/** Delete an audit JSON file. Returns true if the file was deleted or did not exist. */
-	static bool DeleteAuditJson(const FString& JsonPath);
+	/** Delete an audit file. Returns true if the file was deleted or did not exist. */
+	static bool DeleteAuditFile(const FString& FilePath);
 
 	/**
 	 * Convert a package name (e.g. /Game/UI/WBP_Foo) to its .uasset file path on disk.
@@ -196,6 +195,6 @@ struct CORIDERUNREALENGINE_API FBlueprintAuditor
 	/** Compute an MD5 hash of the file at the given path. Returns empty string on failure. */
 	static FString ComputeFileHash(const FString& FilePath);
 
-	/** Serialize a JSON object and write it to disk. Returns true on success. */
-	static bool WriteAuditJson(const TSharedPtr<FJsonObject>& JsonObject, const FString& OutputPath);
+	/** Write audit content to disk. Returns true on success. */
+	static bool WriteAuditFile(const FString& Content, const FString& OutputPath);
 };

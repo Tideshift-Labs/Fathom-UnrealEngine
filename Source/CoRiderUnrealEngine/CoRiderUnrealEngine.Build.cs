@@ -13,13 +13,13 @@ public class CoRiderUnrealEngine : ModuleRules
 			"Engine",
 			"EditorSubsystem",
 			"HTTPServer",
-			"Json",
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
 			"AssetRegistry",
 			"BlueprintGraph",
+			"Json",
 			"UMG",
 			"UMGEditor",
 		});

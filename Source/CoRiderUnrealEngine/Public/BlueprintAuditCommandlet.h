@@ -5,16 +5,16 @@
 #include "BlueprintAuditCommandlet.generated.h"
 
 /**
- * Commandlet that analyzes Blueprint assets and outputs a JSON summary.
+ * Commandlet that analyzes Blueprint assets and outputs a Markdown summary.
  *
  * Usage:
- *   UnrealEditor-Cmd.exe Project.uproject -run=BlueprintAudit [-AssetPath=/Game/Path/To/BP] [-Output=path.json]
+ *   UnrealEditor-Cmd.exe Project.uproject -run=BlueprintAudit [-AssetPath=/Game/Path/To/BP] [-Output=path.md]
  *
  * If -AssetPath is omitted, all Blueprints in the project are audited
- * and each gets its own JSON file under Saved/Audit/Blueprints/.
+ * and each gets its own .md file under Saved/Audit/Blueprints/.
  *
- * If -AssetPath is provided, a single JSON file is written to -Output
- * (defaults to <ProjectDir>/BlueprintAudit.json).
+ * If -AssetPath is provided, a single file is written to -Output
+ * (defaults to <ProjectDir>/BlueprintAudit.md).
  */
 UCLASS()
 class CORIDERUNREALENGINE_API UBlueprintAuditCommandlet : public UCommandlet

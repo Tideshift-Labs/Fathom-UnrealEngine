@@ -2,12 +2,8 @@
 
 #include "BlueprintAuditor.h"
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "Dom/JsonObject.h"
-#include "Dom/JsonValue.h"
 #include "Engine/Blueprint.h"
 #include "Misc/FileHelper.h"
-#include "Serialization/JsonSerializer.h"
-#include "Serialization/JsonWriter.h"
 
 UBlueprintAuditCommandlet::UBlueprintAuditCommandlet()
 {
@@ -31,7 +27,7 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
 	AssetRegistry.SearchAllAssets(true);
 
-	// --- Single-asset mode: write one combined JSON file ---
+	// --- Single-asset mode: write one audit file ---
 	if (!AssetPath.IsEmpty())
 	{
 		UBlueprint* BP = LoadObject<UBlueprint>(nullptr, *AssetPath);
@@ -45,30 +41,30 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 
 		if (!BP)
 		{
-			UE_LOG(LogCoRider, Error, TEXT("CoRider: Blueprint not found — %s"), *AssetPath);
+			UE_LOG(LogCoRider, Error, TEXT("CoRider: Blueprint not found: %s"), *AssetPath);
 			return 1;
 		}
 
 		if (OutputPath.IsEmpty())
 		{
-			OutputPath = FPaths::ProjectDir() / TEXT("BlueprintAudit.json");
+			OutputPath = FPaths::ProjectDir() / TEXT("BlueprintAudit.md");
 		}
 
 		UE_LOG(LogCoRider, Display, TEXT("CoRider: Auditing 1 Blueprint..."));
 
 		const double StartTime = FPlatformTime::Seconds();
-		TSharedPtr<FJsonObject> AuditJson = FBlueprintAuditor::AuditBlueprint(BP);
-		if (!FBlueprintAuditor::WriteAuditJson(AuditJson, OutputPath))
+		const FString AuditMarkdown = FBlueprintAuditor::AuditBlueprint(BP);
+		if (!FBlueprintAuditor::WriteAuditFile(AuditMarkdown, OutputPath))
 		{
 			return 1;
 		}
 		const double Elapsed = FPlatformTime::Seconds() - StartTime;
 
-		UE_LOG(LogCoRider, Display, TEXT("CoRider: Audit complete — wrote %s in %.2fs"), *OutputPath, Elapsed);
+		UE_LOG(LogCoRider, Display, TEXT("CoRider: Audit complete, wrote %s in %.2fs"), *OutputPath, Elapsed);
 		return 0;
 	}
 
-	// --- All-assets mode: write per-file JSONs under Saved/Audit/Blueprints/ ---
+	// --- All-assets mode: write per-file audit under Saved/Audit/Blueprints/ ---
 	TArray<FAssetData> AllBlueprints;
 	AssetRegistry.GetAssetsByClass(UBlueprint::StaticClass()->GetClassPathName(), AllBlueprints, true);
 
@@ -100,8 +96,8 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 		}
 
 		const FString PerFilePath = FBlueprintAuditor::GetAuditOutputPath(BP);
-		TSharedPtr<FJsonObject> AuditJson = FBlueprintAuditor::AuditBlueprint(BP);
-		if (FBlueprintAuditor::WriteAuditJson(AuditJson, PerFilePath))
+		const FString AuditMarkdown = FBlueprintAuditor::AuditBlueprint(BP);
+		if (FBlueprintAuditor::WriteAuditFile(AuditMarkdown, PerFilePath))
 		{
 			++SuccessCount;
 		}
@@ -119,7 +115,7 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 	}
 
 	const double Elapsed = FPlatformTime::Seconds() - StartTime;
-	UE_LOG(LogCoRider, Display, TEXT("CoRider: Audit complete — %d written, %d skipped, %d failed in %.2fs"),
+	UE_LOG(LogCoRider, Display, TEXT("CoRider: Audit complete, %d written, %d skipped, %d failed in %.2fs"),
 		SuccessCount, SkipCount, FailCount, Elapsed);
 	return 0;
 }

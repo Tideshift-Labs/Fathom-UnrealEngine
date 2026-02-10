@@ -21,21 +21,21 @@ UE Editor Plugin                          Rider Plugin (.NET backend)
  BlueprintAuditor (core extraction)       AuditMarkdownFormatter
          |                                          |
          +---writes--->  Saved/Audit/v<N>/  <---reads---+
-                         Blueprints/*.json
+                         Blueprints/*.md
 ```
 
-The UE plugin writes JSON files. The Rider plugin reads them. That is the entire interface.
+The UE plugin writes Markdown files. The Rider plugin reads them. That is the entire interface.
 
 ### Why not sockets or IPC?
 
 1. **Process independence.** The UE editor and Rider are separate processes with separate lifecycles. The editor may not be running when Rider needs audit data. The commandlet runs headless without the editor at all.
 2. **Simplicity.** File I/O is the most straightforward cross-process, cross-language communication possible. No serialization protocol negotiation, no connection management, no reconnection logic.
-3. **Debuggability.** The JSON files are human-readable. You can `cat` them, diff them, grep them. When something goes wrong you can inspect the output directly.
+3. **Debuggability.** The Markdown files are human-readable. You can `cat` them, diff them, grep them. When something goes wrong you can inspect the output directly.
 4. **CI compatibility.** The commandlet can run in a headless build pipeline and produce the same output. No server process needed.
 
 ## Two-phase architecture (game thread / background thread)
 
-Blueprint data extraction requires access to `UObject` pointers, which are only safe to read on the game thread. But file I/O, hashing, and JSON serialization should not block the editor UI.
+Blueprint data extraction requires access to `UObject` pointers, which are only safe to read on the game thread. But file I/O, hashing, and Markdown serialization should not block the editor UI.
 
 The solution is a two-phase design:
 
@@ -53,9 +53,9 @@ Extracted data includes:
 - Event graphs, function graphs, macro graphs with full node-level detail
 - Widget tree hierarchy (for Widget Blueprints)
 
-### Phase 2: `SerializeToJson()` + `WriteAuditJson()` (background thread)
+### Phase 2: `SerializeToMarkdown()` + `WriteAuditFile()` (background thread)
 
-Takes the POD structs and converts them to `FJsonObject`, computes the `SourceFileHash` (MD5 of the `.uasset` file), and writes to disk. This runs on the thread pool via `Async(EAsyncExecution::ThreadPool, ...)`.
+Takes the POD structs and converts them to a Markdown string, computes the file hash (MD5 of the `.uasset` file), and writes to disk. This runs on the thread pool via `Async(EAsyncExecution::ThreadPool, ...)`.
 
 The separation matters because:
 - The game thread is never blocked by disk I/O or MD5 computation
@@ -68,17 +68,17 @@ The separation matters because:
 
 A `UEditorSubsystem` that hooks `UPackage::PackageSavedWithContextEvent`. When a user saves a Blueprint in the editor, it immediately gathers data on the game thread and dispatches a background write. This keeps audit data fresh during normal editing.
 
-It also hooks `OnAssetRemoved` and `OnAssetRenamed` to delete stale audit JSONs when Blueprints are deleted or moved.
+It also hooks `OnAssetRemoved` and `OnAssetRenamed` to delete stale audit files when Blueprints are deleted or moved.
 
 **In-flight dedup:** If a Blueprint is saved while a previous write for the same package is still pending, the second save is skipped. This prevents duplicate writes from rapid save-spam. Tracked via `InFlightPackages` (a `TSet<FString>` guarded by `FCriticalSection`).
 
 ### 2. Batch commandlet (`UBlueprintAuditCommandlet`)
 
 Headless, single-run via `UnrealEditor-Cmd.exe -run=BlueprintAudit`. Two modes:
-- **Single asset:** `-AssetPath=/Game/UI/WBP_Foo -Output=out.json`
-- **All project assets:** Dumps every `/Game/` Blueprint to individual JSON files
+- **Single asset:** `-AssetPath=/Game/UI/WBP_Foo -Output=out.md`
+- **All project assets:** Dumps every `/Game/` Blueprint to individual `.md` files
 
-Uses the legacy synchronous `AuditBlueprint()` API (which wraps `GatherBlueprintData` + `SerializeToJson` in sequence) since the commandlet runs single-threaded. Collects garbage every 50 assets to manage memory with large projects.
+Uses the legacy synchronous `AuditBlueprint()` API (which wraps `GatherBlueprintData` + `SerializeToMarkdown` in sequence) since the commandlet runs single-threaded. Collects garbage every 50 assets to manage memory with large projects.
 
 This mode is invoked by the Rider plugin (via `CompanionPluginService`) and is suitable for CI pipelines.
 
@@ -90,22 +90,22 @@ On editor startup, the subsystem runs a five-phase state machine that detects an
 |-------|------|--------|---------|
 | 1 | WaitingForRegistry | Game (tick) | Waits for AssetRegistry to finish loading |
 | 2 | BuildingList | Game (tick) | Queries all `/Game/` Blueprints, collects package names and file paths |
-| 3 | BackgroundHash | Thread pool | Computes MD5 hashes of `.uasset` files, compares against stored hashes in audit JSONs |
+| 3 | BackgroundHash | Thread pool | Computes MD5 hashes of `.uasset` files, compares against stored hashes in audit files |
 | 4 | ProcessingStale | Game (tick) | Loads stale Blueprints and re-audits them in batches of 5 per tick |
 | 5 | Done | Game (tick) | Sweeps orphaned audit files, unregisters ticker |
 
 The key design constraint is **never freezing the editor**. Phase 3 runs entirely on the thread pool. Phase 4 processes only 5 Blueprints per tick, then yields back to the engine. The state machine is driven by `FTSTicker`, which fires once per frame.
 
-After processing completes, `SweepOrphanedAuditFiles()` walks the audit directory and deletes JSON files whose source `.uasset` no longer exists in the AssetRegistry.
+After processing completes, `SweepOrphanedAuditFiles()` walks the audit directory and deletes `.md` files whose source `.uasset` no longer exists in the AssetRegistry.
 
 ## Staleness detection
 
 Staleness is detected by comparing MD5 hashes of `.uasset` files.
 
-Each audit JSON includes a `SourceFileHash` field containing the MD5 hash of the source `.uasset` at the time the audit was generated. To check freshness, compute the current MD5 of the `.uasset` and compare:
+Each audit file includes a `Hash:` header line containing the MD5 hash of the source `.uasset` at the time the audit was generated. To check freshness, compute the current MD5 of the `.uasset` and compare:
 
 ```
-Stored hash (in JSON)  !=  Current hash (computed from .uasset)  =>  STALE
+Stored hash (in .md)  !=  Current hash (computed from .uasset)  =>  STALE
 ```
 
 This approach was chosen over timestamps because:
@@ -122,21 +122,21 @@ Both sides compute MD5 independently. The UE plugin uses `FMD5Hash::HashFile()`.
 
 ## Schema versioning
 
-The audit JSON schema is versioned via `FBlueprintAuditor::AuditSchemaVersion` (C++) and `BlueprintAuditService.AuditSchemaVersion` (C#). The version is embedded in the output path:
+The audit format is versioned via `FBlueprintAuditor::AuditSchemaVersion` (C++) and `BlueprintAuditService.AuditSchemaVersion` (C#). The version is embedded in the output path:
 
 ```
-Saved/Audit/v2/Blueprints/UI/Widgets/WBP_Foo.json
+Saved/Audit/v4/Blueprints/UI/Widgets/WBP_Foo.md
              ^^
              schema version
 ```
 
-When the schema changes, bump the version on both sides. All existing cached JSON is automatically invalidated because no files exist at the new versioned path. The Rider plugin's boot check will detect the missing audit directory and trigger a full refresh.
+When the format changes, bump the version on both sides. All existing cached files are automatically invalidated because no files exist at the new versioned path. The Rider plugin's boot check will detect the missing audit directory and trigger a full refresh.
 
 **Cross-repo coordination required:** The C++ constant and the C# constant must always match. If they diverge, the Rider plugin will look for audit files in the wrong directory.
 
 **TODO:** Old `Saved/Audit/v<old>/` directories are not automatically cleaned up. This is a minor disk hygiene issue but not a correctness problem.
 
-## What the JSON captures (and doesn't)
+## What the audit captures (and doesn't)
 
 ### Captured
 
@@ -154,8 +154,8 @@ When the schema changes, bump the version on both sides. All existing cached JSO
 
 ### Not captured
 
-- **Node-level spatial layout** (X/Y positions). This is deliberately omitted because it is irrelevant for semantic analysis and would massively bloat the JSON.
-- **Pin connections between nodes.** The graph structure (which node connects to which) is not captured. We capture what functions are called and what variables are accessed, but not the execution flow wiring. This is a significant gap for understanding complex graph logic, but was deferred due to the complexity of serializing the full graph topology.
+- **Node-level spatial layout** (X/Y positions). This is deliberately omitted because it is irrelevant for semantic analysis and would bloat the output.
+- ~~**Pin connections between nodes.**~~ As of V3/V4, full graph topology (exec flows and data flows) is captured. This is no longer a limitation.
 - **Animation Blueprint internals.** `UAnimBlueprint` state machines, blend spaces, and anim graph nodes are not extracted. The auditor handles the base `UBlueprint` class and the `UWidgetBlueprint` subclass, but not `UAnimBlueprint`.
 - **Data-only Blueprints.** Blueprints with no graphs (pure data containers) are still audited but produce minimal output (just metadata, variables, and property overrides). This is correct behavior, not a limitation.
 - **Comment nodes and reroute nodes.** These are filtered out implicitly because they don't match any of the `UK2Node_*` cast checks.
@@ -175,16 +175,14 @@ The Rider plugin (.NET backend) provides HTTP endpoints for accessing audit data
 
 When the Rider plugin triggers a refresh and the commandlet fails with output containing "unknown commandlet" or similar, it sets a `_commandletMissing` flag. Subsequent requests return HTTP 501 with installation instructions rather than repeatedly attempting to run the commandlet.
 
-### Simple JSON parser
+### Audit header parser
 
-The Rider-side `ParseSimpleJson()` uses regex to extract top-level string, number, and boolean fields rather than performing full JSON deserialization. This is intentional:
+The Rider-side `ParseAuditHeader()` reads the first few lines of the Markdown audit file to extract header fields (`Name` from the H1 heading, plus `Path`, `Hash`, `Parent`, `Type` from `Key: Value` lines). This is intentional:
 
-- The audit JSON can be large (hundreds of KB for complex Blueprints with many graphs)
-- The Rider plugin only needs top-level fields for staleness checks (`SourceFileHash`, `Name`, `Path`)
-- Regex extraction of flat key-value pairs is faster and simpler than walking a full JSON DOM
-- The full JSON content is passed through as-is to HTTP consumers
-
-This parser deliberately does not handle arrays or nested objects. It only captures the first occurrence of each key at the document level.
+- The audit file can be large (hundreds of KB for complex Blueprints with many graphs)
+- The Rider plugin only needs header fields for staleness checks (`Hash`, `Name`, `Path`)
+- Line-prefix parsing is simpler and faster than any structured deserialization
+- The full Markdown content is stored as `AuditContent` and passed through to HTTP consumers
 
 ## Limitations and known issues
 
@@ -212,7 +210,7 @@ The `UBlueprintAuditSubsystem` is a `UEditorSubsystem` and only runs when the UE
 
 ### 6. Race between subsystem and commandlet
 
-If the editor's subsystem is re-auditing a Blueprint (via on-save) at the same time the Rider plugin triggers a commandlet refresh, both may write to the same JSON file concurrently. In practice this is safe because:
+If the editor's subsystem is re-auditing a Blueprint (via on-save) at the same time the Rider plugin triggers a commandlet refresh, both may write to the same audit file concurrently. In practice this is safe because:
 - The commandlet runs in a separate process (so no in-process race)
 - File writes are atomic at the OS level for reasonable file sizes
 - The last writer wins, and both produce correct content
@@ -233,10 +231,10 @@ When modifying the audit system, keep these in sync between the UE plugin and th
 
 | Item | UE plugin location | Rider plugin location |
 |------|-------------------|----------------------|
-| Schema version | `BlueprintAuditor.h` line 116: `AuditSchemaVersion` | `BlueprintAuditService.cs` line 21: `AuditSchemaVersion` |
-| Audit output path pattern | `GetAuditBaseDir()`: `Saved/Audit/v<N>/Blueprints/` | `BlueprintAuditService.cs` line 70, 202: hardcoded path construction |
-| Commandlet name | `BlueprintAuditCommandlet.h` class name -> `BlueprintAudit` | `BlueprintAuditService.cs` line 293: `-run=BlueprintAudit` |
-| JSON field names | `BlueprintAuditor.cpp` `SerializeToJson()` | `BlueprintAuditService.cs` `ParseSimpleJson()` and `ReadAndCheckBlueprintAudit()` |
+| Schema version | `BlueprintAuditor.h`: `AuditSchemaVersion` | `BlueprintAuditService.cs`: `AuditSchemaVersion` |
+| Audit output path pattern | `GetAuditBaseDir()`: `Saved/Audit/v<N>/Blueprints/` | `BlueprintAuditService.cs`: hardcoded path construction |
+| Commandlet name | `BlueprintAuditCommandlet.h` class name -> `BlueprintAudit` | `BlueprintAuditService.cs`: `-run=BlueprintAudit` |
+| Header field names | `BlueprintAuditor.cpp` `SerializeToMarkdown()` | `BlueprintAuditService.cs` `ParseAuditHeader()` and `ReadAndCheckBlueprintAudit()` |
 | Hash algorithm | `FMD5Hash::HashFile()` (MD5, lowercase hex) | `MD5.Create()` + `BitConverter.ToString().Replace("-","").ToLowerInvariant()` |
 
 ## Testing
@@ -257,8 +255,8 @@ Verify output at `<ProjectDir>/Saved/Audit/v<N>/Blueprints/`.
 
 1. Open the UE project in the editor with the plugin installed
 2. Open and save a Blueprint
-3. Check that the corresponding JSON file in `Saved/Audit/v<N>/Blueprints/` was updated
-4. Verify `SourceFileHash` in the JSON matches the current `.uasset` MD5
+3. Check that the corresponding `.md` file in `Saved/Audit/v<N>/Blueprints/` was updated
+4. Verify the `Hash:` line in the `.md` file matches the current `.uasset` MD5
 
 ### Rider integration
 
