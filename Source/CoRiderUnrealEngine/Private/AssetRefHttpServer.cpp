@@ -132,6 +132,12 @@ bool FAssetRefHttpServer::TryBind(int32 Port)
 		EHttpServerRequestVerbs::VERB_GET,
 		FHttpRequestHandler::CreateRaw(this, &FAssetRefHttpServer::HandleSearch)));
 
+	// GET /asset-refs/show
+	Handles.Add(Router->BindRoute(
+		FHttpPath(TEXT("/asset-refs/show")),
+		EHttpServerRequestVerbs::VERB_GET,
+		FHttpRequestHandler::CreateRaw(this, &FAssetRefHttpServer::HandleShow)));
+
 	// Check all handles are valid
 	for (const FHttpRouteHandle& Handle : Handles)
 	{
@@ -486,6 +492,95 @@ bool FAssetRefHttpServer::HandleSearch(const FHttpServerRequest& Request, const 
 	}
 
 	ResponseJson->SetArrayField(TEXT("results"), ResultsArray);
+
+	FString Body;
+	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
+	FJsonSerializer::Serialize(ResponseJson, Writer);
+
+	auto Response = FHttpServerResponse::Create(Body, TEXT("application/json"));
+	OnComplete(MoveTemp(Response));
+	return true;
+}
+
+bool FAssetRefHttpServer::HandleShow(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+{
+	FString PackagePath;
+	if (Request.QueryParams.Contains(TEXT("package")))
+	{
+		PackagePath = Request.QueryParams[TEXT("package")];
+	}
+
+	if (PackagePath.IsEmpty())
+	{
+		TSharedRef<FJsonObject> ErrorJson = MakeShared<FJsonObject>();
+		ErrorJson->SetStringField(TEXT("error"), TEXT("Missing required 'package' query parameter"));
+		ErrorJson->SetStringField(TEXT("usage"), TEXT("/asset-refs/show?package=/Game/Path/To/Asset"));
+
+		FString Body;
+		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
+		FJsonSerializer::Serialize(ErrorJson, Writer);
+
+		auto Response = FHttpServerResponse::Create(Body, TEXT("application/json"));
+		Response->Code = EHttpServerResponseCodes::BadRequest;
+		OnComplete(MoveTemp(Response));
+		return true;
+	}
+
+	IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+
+	TArray<FAssetData> AssetDataList;
+	Registry.GetAssetsByPackageName(FName(*PackagePath), AssetDataList, true);
+	if (AssetDataList.IsEmpty())
+	{
+		TSharedRef<FJsonObject> ErrorJson = MakeShared<FJsonObject>();
+		ErrorJson->SetStringField(TEXT("error"), TEXT("Asset not found in registry"));
+		ErrorJson->SetStringField(TEXT("package"), PackagePath);
+
+		FString Body;
+		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
+		FJsonSerializer::Serialize(ErrorJson, Writer);
+
+		auto Response = FHttpServerResponse::Create(Body, TEXT("application/json"));
+		Response->Code = EHttpServerResponseCodes::NotFound;
+		OnComplete(MoveTemp(Response));
+		return true;
+	}
+
+	const FAssetData& Asset = AssetDataList[0];
+
+	TSharedRef<FJsonObject> ResponseJson = MakeShared<FJsonObject>();
+	ResponseJson->SetStringField(TEXT("package"), Asset.PackageName.ToString());
+	ResponseJson->SetStringField(TEXT("name"), Asset.AssetName.ToString());
+	ResponseJson->SetStringField(TEXT("assetClass"), Asset.AssetClassPath.GetAssetName().ToString());
+
+	// On-disk path and file size
+	FString DiskPath = FBlueprintAuditor::GetSourceFilePath(PackagePath);
+	if (!DiskPath.IsEmpty())
+	{
+		ResponseJson->SetStringField(TEXT("diskPath"), DiskPath);
+		const int64 FileSize = IFileManager::Get().FileSize(*DiskPath);
+		if (FileSize >= 0)
+		{
+			ResponseJson->SetNumberField(TEXT("diskSizeBytes"), static_cast<double>(FileSize));
+		}
+	}
+
+	// Dependency and referencer counts
+	TArray<FAssetDependency> Dependencies;
+	Registry.GetDependencies(FAssetIdentifier(FName(*PackagePath)), Dependencies, UE::AssetRegistry::EDependencyCategory::All);
+	ResponseJson->SetNumberField(TEXT("dependencyCount"), Dependencies.Num());
+
+	TArray<FAssetDependency> Referencers;
+	Registry.GetReferencers(FAssetIdentifier(FName(*PackagePath)), Referencers, UE::AssetRegistry::EDependencyCategory::All);
+	ResponseJson->SetNumberField(TEXT("referencerCount"), Referencers.Num());
+
+	// Registry tags
+	TSharedRef<FJsonObject> TagsJson = MakeShared<FJsonObject>();
+	for (const auto& TagPair : Asset.TagsAndValues)
+	{
+		TagsJson->SetStringField(TagPair.Key.ToString(), TagPair.Value.GetValue());
+	}
+	ResponseJson->SetObjectField(TEXT("tags"), TagsJson);
 
 	FString Body;
 	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
