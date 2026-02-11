@@ -574,11 +574,16 @@ bool FAssetRefHttpServer::HandleShow(const FHttpServerRequest& Request, const FH
 	Registry.GetReferencers(FAssetIdentifier(FName(*PackagePath)), Referencers, UE::AssetRegistry::EDependencyCategory::All);
 	ResponseJson->SetNumberField(TEXT("referencerCount"), Referencers.Num());
 
-	// Registry tags
+	// Registry tags (skip FiBData which contains binary blob data)
 	TSharedRef<FJsonObject> TagsJson = MakeShared<FJsonObject>();
 	for (const auto& TagPair : Asset.TagsAndValues)
 	{
-		TagsJson->SetStringField(TagPair.Key.ToString(), TagPair.Value.GetValue());
+		const FString Key = TagPair.Key.ToString();
+		if (Key == TEXT("FiBData"))
+		{
+			continue;
+		}
+		TagsJson->SetStringField(Key, TagPair.Value.GetValue());
 	}
 	ResponseJson->SetObjectField(TEXT("tags"), TagsJson);
 
