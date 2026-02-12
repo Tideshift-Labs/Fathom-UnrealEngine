@@ -108,6 +108,10 @@ void UBlueprintAuditSubsystem::OnPackageSaved(const FString& PackageFileName, UP
 	{
 		if (const UBlueprint* BP = Cast<UBlueprint>(Object))
 		{
+			if (!FBlueprintAuditor::IsSupportedBlueprintClass(BP->GetClass()->GetClassPathName()))
+			{
+				return true; // skip unsupported Blueprint subclasses
+			}
 			// Gather data on the game thread (fast, reads UObject pointers)
 			FBlueprintAuditData Data = FBlueprintAuditor::GatherBlueprintData(BP);
 
@@ -196,6 +200,13 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 			const FString PackageName = Asset.PackageName.ToString();
 			if (!PackageName.StartsWith(TEXT("/Game/")))
 			{
+				continue;
+			}
+
+			if (!FBlueprintAuditor::IsSupportedBlueprintClass(Asset.AssetClassPath))
+			{
+				UE_LOG(LogCoRider, Verbose, TEXT("CoRider: Skipping unsupported Blueprint class %s (%s)"),
+					*PackageName, *Asset.AssetClassPath.ToString());
 				continue;
 			}
 

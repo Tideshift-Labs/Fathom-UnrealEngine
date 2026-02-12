@@ -22,6 +22,7 @@
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "Misc/SecureHash.h"
+#include "UObject/TopLevelAssetPath.h"
 #include "UObject/UnrealType.h"
 #include "WidgetBlueprint.h"
 #include "Blueprint/WidgetTree.h"
@@ -914,4 +915,19 @@ bool FBlueprintAuditor::WriteAuditFile(const FString& Content, const FString& Ou
 
 	UE_LOG(LogCoRider, Error, TEXT("CoRider: Failed to write %s"), *OutputPath);
 	return false;
+}
+
+bool FBlueprintAuditor::IsSupportedBlueprintClass(const FTopLevelAssetPath& ClassPath)
+{
+	const FString ClassName = ClassPath.GetAssetName().ToString();
+
+	// ControlRigBlueprint and RigVMBlueprint trigger fatal assertions in
+	// RigVMController during LoadObject (InOuter assertion failure) because
+	// their subsystems expect a loading context that bare LoadObject cannot provide.
+	if (ClassName.Contains(TEXT("ControlRig")) || ClassName.Contains(TEXT("RigVM")))
+	{
+		return false;
+	}
+
+	return true;
 }

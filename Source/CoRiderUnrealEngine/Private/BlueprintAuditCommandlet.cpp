@@ -87,6 +87,14 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 			continue;
 		}
 
+		if (!FBlueprintAuditor::IsSupportedBlueprintClass(Asset.AssetClassPath))
+		{
+			++SkipCount;
+			UE_LOG(LogCoRider, Verbose, TEXT("CoRider: Skipping unsupported Blueprint class %s (%s)"),
+				*Asset.PackageName.ToString(), *Asset.AssetClassPath.ToString());
+			continue;
+		}
+
 		UBlueprint* BP = Cast<UBlueprint>(Asset.GetAsset());
 		if (!BP)
 		{

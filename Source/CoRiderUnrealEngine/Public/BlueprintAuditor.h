@@ -5,6 +5,7 @@
 class UBlueprint;
 class UEdGraph;
 struct FEdGraphPinType;
+struct FTopLevelAssetPath;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogCoRider, Log, All);
 
@@ -198,4 +199,11 @@ struct CORIDERUNREALENGINE_API FBlueprintAuditor
 
 	/** Write audit content to disk. Returns true on success. */
 	static bool WriteAuditFile(const FString& Content, const FString& OutputPath);
+
+	/**
+	 * Returns true if the given Blueprint native class is safe to load and audit.
+	 * Some Blueprint subclasses (ControlRig, RigVM) crash during LoadObject because
+	 * their subsystems expect a specific loading context we cannot provide.
+	 */
+	static bool IsSupportedBlueprintClass(const FTopLevelAssetPath& ClassPath);
 };
