@@ -64,6 +64,18 @@ This plugin is designed to work with the companion Rider plugin (`CoRider`). The
 1. Detects when audit data is stale by comparing the `Hash` header field with current file hashes
 2. Automatically triggers the commandlet to refresh stale data
 3. Exposes audit data via HTTP endpoints for LLM integration
+4. Bundles this plugin and auto-installs it into the user's project `Plugins/` directory
+
+### Versioning
+
+This plugin's `VersionName` in `CoRiderUnrealEngine.uplugin` is kept in sync with the Rider plugin's `PluginVersion`. The Rider plugin compares these at runtime to detect outdated installations. Do not bump the version here manually; use the bump script in the CoRider repo instead:
+
+```powershell
+# From the CoRider repo root
+.\scripts\bump-version.ps1 -Version X.Y.Z
+```
+
+See [CoRider/docs/release.md](../CoRider/docs/release.md) for the full release process.
 
 ## Requirements
 
