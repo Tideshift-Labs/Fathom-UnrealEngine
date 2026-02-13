@@ -1,28 +1,32 @@
 # Fathom-UnrealEngine
 
-An Unreal Engine editor plugin that exports Blueprint asset summaries to Markdown for external analysis, diffing, and LLM integration.
+The Unreal Engine companion plugin for [Fathom](https://github.com/Tideshift-Labs/Fathom). Provides UE5-specific project analysis that Fathom surfaces to AI agents.
 
-## Features
+Unreal Engine keeps much of its project data in binary formats (`.uasset`) that external tools cannot read. This plugin runs inside the UE editor to extract that data and make it available to Fathom, which in turn exposes it to agents via its MCP server and HTTP API.
 
-- **Markdown Export**: Extracts comprehensive Blueprint metadata including variables, components, event graphs, function calls, and widget trees into a token-efficient Markdown format
-- **Commandlet Support**: Run audits from command line without opening the editor UI
-- **On-Save Hooks**: Automatically re-audit Blueprints when saved (via editor subsystem)
-- **Staleness Detection**: Includes source file hashes for detecting when audit data is out of date
-- **Widget Blueprint Support**: Extracts widget hierarchies from UMG Widget Blueprints
-- **Asset Reference Server**: HTTP API for querying asset dependencies, referencers, and metadata
+**You do not need to install this plugin manually.** The Fathom Rider plugin bundles it and auto-installs it into your project's `Plugins/` directory.
 
-## Installation
+## What it provides
 
-### Option 1: Symlink (Development)
+- **Blueprint Audit**: Extracts comprehensive Blueprint metadata (variables, components, graphs, timelines, widget trees, CDO overrides) into token-efficient Markdown files
+- **Asset Reference Server**: HTTP API for querying asset dependencies, referencers, fuzzy search, and metadata (ports 19900-19910)
+- **On-Save Hooks**: Automatically re-audits Blueprints when saved, and cleans up audit files when assets are deleted or renamed
+- **Startup Stale Check**: Background state machine detects and re-audits stale Blueprints on editor launch without freezing the UI
+- **Commandlet Support**: Run audits headless from the command line for CI/automation
+- **Staleness Detection**: MD5 hashes of `.uasset` files detect when audit data is out of date
 
-Create a symbolic link from your project's Plugins folder:
+## Installation (Development)
+
+For normal use, Fathom installs this plugin automatically. The instructions below are only for developing or debugging the plugin itself.
+
+### Symlink
 
 ```powershell
 # From your UE project directory (Junction doesn't require admin or Developer Mode)
 New-Item -ItemType Junction -Path "Plugins\FathomUELink" -Target "path\to\Fathom-UnrealEngine"
 ```
 
-### Option 2: Copy
+### Copy
 
 Copy the `FathomUELink` plugin folder to your project's `Plugins` directory.
 
@@ -57,16 +61,7 @@ When the editor is running, the `UBlueprintAuditSubsystem` automatically re-audi
 
 The audit produces Markdown optimized for LLM consumption (more token-efficient than JSON). Each file includes a header block (name, path, parent class, hash), followed by sections for variables, components, event graphs, functions, widget trees, and more. Sections with no data are omitted. See the [audit format reference](docs/audit_format.md) for the full specification and examples.
 
-## Integration with Rider Plugin
-
-This plugin is designed to work with the companion Rider plugin ([Fathom](https://github.com/Tideshift-Labs/Fathom)). The Rider plugin:
-
-1. Detects when audit data is stale by comparing the `Hash` header field with current file hashes
-2. Automatically triggers the commandlet to refresh stale data
-3. Exposes audit data via HTTP endpoints for LLM integration
-4. Bundles this plugin and auto-installs it into the user's project `Plugins/` directory
-
-### Versioning
+## Versioning
 
 This plugin's `VersionName` in `FathomUELink.uplugin` is kept in sync with the Rider plugin's `PluginVersion`. The Rider plugin compares these at runtime to detect outdated installations. Do not bump the version here manually; use the bump script in the Fathom repo instead:
 
