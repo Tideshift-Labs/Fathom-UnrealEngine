@@ -39,7 +39,7 @@ DEFINE_LOG_CATEGORY(LogFathomUELink);
 namespace
 {
 	/** Follow pin connections through UK2Node_Knot reroute nodes to find real endpoints. */
-	TArray<UEdGraphPin*> TraceThroughKnots(UEdGraphPin* Pin)
+	TArray<UEdGraphPin*> TraceThroughKnots(UEdGraphPin* Pin, TSet<UEdGraphNode*>& Visited)
 	{
 		TArray<UEdGraphPin*> Result;
 		for (UEdGraphPin* Linked : Pin->LinkedTo)
@@ -47,6 +47,14 @@ namespace
 			UEdGraphNode* Owner = Linked->GetOwningNode();
 			if (UK2Node_Knot* Knot = Cast<UK2Node_Knot>(Owner))
 			{
+				// Guard against cyclic knot chains (corrupted graphs)
+				bool bAlreadyVisited = false;
+				Visited.Add(Knot, &bAlreadyVisited);
+				if (bAlreadyVisited)
+				{
+					continue;
+				}
+
 				// Find the output pin on the knot and recurse
 				for (UEdGraphPin* KnotPin : Knot->Pins)
 				{
@@ -54,7 +62,7 @@ namespace
 					{
 						continue;
 					}
-					Result.Append(TraceThroughKnots(KnotPin));
+					Result.Append(TraceThroughKnots(KnotPin, Visited));
 				}
 			}
 			else
@@ -409,8 +417,9 @@ FGraphAuditData FBlueprintAuditor::GatherGraphData(const UEdGraph* Graph)
 			const bool bIsExec = Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec;
 			const FString SrcPinName = Pin->PinName.ToString();
 
-			// Resolve through knot/reroute nodes
-			TArray<UEdGraphPin*> ResolvedPins = TraceThroughKnots(const_cast<UEdGraphPin*>(Pin));
+			// Resolve through knot/reroute nodes (visited set prevents cycles)
+			TSet<UEdGraphNode*> Visited;
+			TArray<UEdGraphPin*> ResolvedPins = TraceThroughKnots(const_cast<UEdGraphPin*>(Pin), Visited);
 
 			for (UEdGraphPin* TargetPin : ResolvedPins)
 			{
