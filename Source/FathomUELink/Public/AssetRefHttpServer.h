@@ -29,10 +29,10 @@ private:
 	/** Try to bind the HTTP module router on the given port. */
 	bool TryBind(int32 Port);
 
-	/** Write Saved/.fathom-ue-server.json with port, PID, and timestamp. */
+	/** Write Saved/Fathom/.fathom-ue-server.json with port, PID, and timestamp. */
 	void WriteMarkerFile() const;
 
-	/** Delete Saved/.fathom-ue-server.json if it exists. */
+	/** Delete Saved/Fathom/.fathom-ue-server.json if it exists. */
 	void DeleteMarkerFile() const;
 
 	/** Return the full path to the marker file. */

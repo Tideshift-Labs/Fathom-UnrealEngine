@@ -165,6 +165,9 @@ bool FAssetRefHttpServer::TryBind(int32 Port)
 void FAssetRefHttpServer::WriteMarkerFile() const
 {
 	const FString MarkerPath = GetMarkerFilePath();
+	const FString MarkerDir = FPaths::GetPath(MarkerPath);
+	IFileManager::Get().MakeDirectory(*MarkerDir, true);
+
 	const FString Json = FString::Printf(
 		TEXT("{\n  \"port\": %d,\n  \"pid\": %d,\n  \"started\": \"%s\"\n}"),
 		BoundPort,
@@ -182,7 +185,7 @@ void FAssetRefHttpServer::DeleteMarkerFile() const
 
 FString FAssetRefHttpServer::GetMarkerFilePath()
 {
-	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT(".fathom-ue-server.json"));
+	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Fathom"), TEXT(".fathom-ue-server.json"));
 }
 
 // -- Route handlers --
