@@ -64,7 +64,7 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 		return 0;
 	}
 
-	// --- All-assets mode: write per-file audit under Saved/Audit/Blueprints/ ---
+	// --- All-assets mode: write per-file audit under Saved/Fathom/Audit/Blueprints/ ---
 	TArray<FAssetData> AllBlueprints;
 	AssetRegistry.GetAssetsByClass(UBlueprint::StaticClass()->GetClassPathName(), AllBlueprints, true);
 

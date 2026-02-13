@@ -176,12 +176,12 @@ struct FATHOMUELINK_API FBlueprintAuditor
 	/** Human-readable type string for a Blueprint variable pin type. */
 	static FString GetVariableTypeString(const FEdGraphPinType& PinType);
 
-	/** Return the base directory for all audit files: <ProjectDir>/Saved/Audit/v<N>/Blueprints */
+	/** Return the base directory for all audit files: <ProjectDir>/Saved/Fathom/Audit/v<N>/Blueprints */
 	static FString GetAuditBaseDir();
 
 	/**
 	 * Compute the on-disk output path for a Blueprint's audit file.
-	 * e.g. /Game/UI/Widgets/WBP_Foo  ->  <ProjectDir>/Saved/Audit/v<N>/Blueprints/UI/Widgets/WBP_Foo.md
+	 * e.g. /Game/UI/Widgets/WBP_Foo  ->  <ProjectDir>/Saved/Fathom/Audit/v<N>/Blueprints/UI/Widgets/WBP_Foo.md
 	 */
 	static FString GetAuditOutputPath(const UBlueprint* BP);
 	static FString GetAuditOutputPath(const FString& PackageName);

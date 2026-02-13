@@ -20,7 +20,7 @@ UE Editor Plugin                          Rider Plugin (.NET backend)
  BlueprintAuditCommandlet (headless)      BlueprintAuditHandler (HTTP)
  BlueprintAuditor (core extraction)       AuditMarkdownFormatter
          |                                          |
-         +---writes--->  Saved/Audit/v<N>/  <---reads---+
+         +---writes--->  Saved/Fathom/Audit/v<N>/  <---reads---+
                          Blueprints/*.md
 ```
 
@@ -125,7 +125,7 @@ Both sides compute MD5 independently. The UE plugin uses `FMD5Hash::HashFile()`.
 The audit format is versioned via `FBlueprintAuditor::AuditSchemaVersion` (C++) and `BlueprintAuditService.AuditSchemaVersion` (C#). The version is embedded in the output path:
 
 ```
-Saved/Audit/v4/Blueprints/UI/Widgets/WBP_Foo.md
+Saved/Fathom/Audit/v4/Blueprints/UI/Widgets/WBP_Foo.md
              ^^
              schema version
 ```
@@ -134,7 +134,7 @@ When the format changes, bump the version on both sides. All existing cached fil
 
 **Cross-repo coordination required:** The C++ constant and the C# constant must always match. If they diverge, the Rider plugin will look for audit files in the wrong directory.
 
-**TODO:** Old `Saved/Audit/v<old>/` directories are not automatically cleaned up. This is a minor disk hygiene issue but not a correctness problem.
+**TODO:** Old `Saved/Fathom/Audit/v<old>/` directories are not automatically cleaned up. This is a minor disk hygiene issue but not a correctness problem.
 
 ## What the audit captures (and doesn't)
 
@@ -202,7 +202,7 @@ The Rider plugin's `HttpListener` (using Windows HTTP.sys) and UE's `FHttpServer
 
 ### 4. No old schema version cleanup
 
-When `AuditSchemaVersion` is bumped, old `Saved/Audit/v<old>/` directories are left on disk. They are harmless (the new version simply ignores them) but waste disk space over time.
+When `AuditSchemaVersion` is bumped, old `Saved/Fathom/Audit/v<old>/` directories are left on disk. They are harmless (the new version simply ignores them) but waste disk space over time.
 
 ### 5. Subsystem requires editor
 
@@ -232,7 +232,7 @@ When modifying the audit system, keep these in sync between the UE plugin and th
 | Item | UE plugin location | Rider plugin location |
 |------|-------------------|----------------------|
 | Schema version | `BlueprintAuditor.h`: `AuditSchemaVersion` | `BlueprintAuditService.cs`: `AuditSchemaVersion` |
-| Audit output path pattern | `GetAuditBaseDir()`: `Saved/Audit/v<N>/Blueprints/` | `BlueprintAuditService.cs`: hardcoded path construction |
+| Audit output path pattern | `GetAuditBaseDir()`: `Saved/Fathom/Audit/v<N>/Blueprints/` | `BlueprintAuditService.cs`: hardcoded path construction |
 | Commandlet name | `BlueprintAuditCommandlet.h` class name -> `BlueprintAudit` | `BlueprintAuditService.cs`: `-run=BlueprintAudit` |
 | Header field names | `BlueprintAuditor.cpp` `SerializeToMarkdown()` | `BlueprintAuditService.cs` `ParseAuditHeader()` and `ReadAndCheckBlueprintAudit()` |
 | Hash algorithm | `FMD5Hash::HashFile()` (MD5, lowercase hex) | `MD5.Create()` + `BitConverter.ToString().Replace("-","").ToLowerInvariant()` |
@@ -249,13 +249,13 @@ UnrealEditor-Cmd.exe "path/to/Project.uproject" -run=BlueprintAudit -unattended 
 UnrealEditor-Cmd.exe "path/to/Project.uproject" -run=BlueprintAudit -AssetPath=/Game/UI/WBP_MainMenu
 ```
 
-Verify output at `<ProjectDir>/Saved/Audit/v<N>/Blueprints/`.
+Verify output at `<ProjectDir>/Saved/Fathom/Audit/v<N>/Blueprints/`.
 
 ### On-save hooks
 
 1. Open the UE project in the editor with the plugin installed
 2. Open and save a Blueprint
-3. Check that the corresponding `.md` file in `Saved/Audit/v<N>/Blueprints/` was updated
+3. Check that the corresponding `.md` file in `Saved/Fathom/Audit/v<N>/Blueprints/` was updated
 4. Verify the `Hash:` line in the `.md` file matches the current `.uasset` MD5
 
 ### Rider integration

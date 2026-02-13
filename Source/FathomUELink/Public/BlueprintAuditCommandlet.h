@@ -11,7 +11,7 @@
  *   UnrealEditor-Cmd.exe Project.uproject -run=BlueprintAudit [-AssetPath=/Game/Path/To/BP] [-Output=path.md]
  *
  * If -AssetPath is omitted, all Blueprints in the project are audited
- * and each gets its own .md file under Saved/Audit/Blueprints/.
+ * and each gets its own .md file under Saved/Fathom/Audit/Blueprints/.
  *
  * If -AssetPath is provided, a single file is written to -Output
  * (defaults to <ProjectDir>/BlueprintAudit.md).

@@ -29,7 +29,7 @@ struct FStaleCheckEntry
 /**
  * Editor subsystem that automatically audits Blueprint assets on save.
  * Hooks into UPackage::PackageSavedWithContextEvent and writes a per-file
- * Markdown audit to Saved/Audit/Blueprints/, mirroring the Content directory layout.
+ * Markdown audit to Saved/Fathom/Audit/Blueprints/, mirroring the Content directory layout.
  *
  * On startup, runs a three-phase stale check that offloads hashing and I/O
  * to background threads and chunks game-thread work across ticks to avoid

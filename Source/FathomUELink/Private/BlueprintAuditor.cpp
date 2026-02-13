@@ -857,7 +857,7 @@ FString FBlueprintAuditor::GetAuditOutputPath(const UBlueprint* BP)
 FString FBlueprintAuditor::GetAuditBaseDir()
 {
 	const FString VersionDir = FString::Printf(TEXT("v%d"), AuditSchemaVersion);
-	return FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("Saved") / TEXT("Audit") / VersionDir / TEXT("Blueprints"));
+	return FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("Saved") / TEXT("Fathom") / TEXT("Audit") / VersionDir / TEXT("Blueprints"));
 }
 
 FString FBlueprintAuditor::GetAuditOutputPath(const FString& PackageName)
