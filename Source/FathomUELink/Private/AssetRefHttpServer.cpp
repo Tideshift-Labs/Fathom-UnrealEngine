@@ -67,12 +67,12 @@ bool FAssetRefHttpServer::Start()
 		{
 			BoundPort = Port;
 			WriteMarkerFile();
-			UE_LOG(LogCoRider, Display, TEXT("CoRider: Asset ref HTTP server listening on port %d"), BoundPort);
+			UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Asset ref HTTP server listening on port %d"), BoundPort);
 			return true;
 		}
 	}
 
-	UE_LOG(LogCoRider, Error, TEXT("CoRider: Failed to bind asset ref HTTP server on ports %d-%d"), PortRangeStart, PortRangeEnd);
+	UE_LOG(LogFathomUELink, Error, TEXT("Fathom: Failed to bind asset ref HTTP server on ports %d-%d"), PortRangeStart, PortRangeEnd);
 	return false;
 }
 
@@ -90,7 +90,7 @@ void FAssetRefHttpServer::Stop()
 	if (BoundPort != 0)
 	{
 		DeleteMarkerFile();
-		UE_LOG(LogCoRider, Display, TEXT("CoRider: Asset ref HTTP server stopped (was on port %d)"), BoundPort);
+		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Asset ref HTTP server stopped (was on port %d)"), BoundPort);
 		BoundPort = 0;
 	}
 
@@ -182,7 +182,7 @@ void FAssetRefHttpServer::DeleteMarkerFile() const
 
 FString FAssetRefHttpServer::GetMarkerFilePath()
 {
-	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT(".corider-ue-server.json"));
+	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT(".fathom-ue-server.json"));
 }
 
 // -- Route handlers --

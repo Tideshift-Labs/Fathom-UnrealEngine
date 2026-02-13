@@ -10,7 +10,7 @@ void UAssetRefSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	HttpServer = MakeUnique<FAssetRefHttpServer>();
 	if (!HttpServer->Start())
 	{
-		UE_LOG(LogCoRider, Warning, TEXT("CoRider: Asset ref HTTP server failed to start"));
+		UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Asset ref HTTP server failed to start"));
 		HttpServer.Reset();
 	}
 }

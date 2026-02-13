@@ -3,7 +3,7 @@
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
 
-class FCoRiderUnrealEngineModule : public IModuleInterface
+class FFathomUELinkModule : public IModuleInterface
 {
 public:
 	virtual void StartupModule() override;

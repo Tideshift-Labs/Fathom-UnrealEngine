@@ -7,7 +7,7 @@ class UEdGraph;
 struct FEdGraphPinType;
 struct FTopLevelAssetPath;
 
-DECLARE_LOG_CATEGORY_EXTERN(LogCoRider, Log, All);
+DECLARE_LOG_CATEGORY_EXTERN(LogFathomUELink, Log, All);
 
 // --- POD audit data structs (no UObject pointers, safe to move across threads) ---
 
@@ -135,7 +135,7 @@ struct FBlueprintAuditData
  * Shared utility for auditing Blueprint assets.
  * Used by both BlueprintAuditCommandlet (batch) and BlueprintAuditSubsystem (on-save).
  */
-struct CORIDERUNREALENGINE_API FBlueprintAuditor
+struct FATHOMUELINK_API FBlueprintAuditor
 {
 	/** Bump when the audit format changes to invalidate all cached audit files. */
 	static constexpr int32 AuditSchemaVersion = 4;

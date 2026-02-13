@@ -10,7 +10,7 @@
  * Starts the server on editor launch and stops it on shutdown.
  */
 UCLASS()
-class CORIDERUNREALENGINE_API UAssetRefSubsystem : public UEditorSubsystem
+class FATHOMUELINK_API UAssetRefSubsystem : public UEditorSubsystem
 {
 	GENERATED_BODY()
 

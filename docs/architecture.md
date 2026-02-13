@@ -2,22 +2,22 @@
 
 ```
 CoRider-UnrealEngine/
-└── Source/CoRiderUnrealEngine/
-    ├── CoRiderUnrealEngine.Build.cs           # Module build rules
+└── Source/FathomUELink/
+    ├── FathomUELink.Build.cs                    # Module build rules
     ├── Public/
-    │   ├── CoRiderUnrealEngineModule.h        # Module interface
-    │   ├── BlueprintAuditor.h                 # Core audit logic + AuditSchemaVersion
-    │   ├── BlueprintAuditCommandlet.h         # CLI commandlet header
-    │   ├── BlueprintAuditSubsystem.h          # Editor subsystem header
-    │   ├── AssetRefHttpServer.h               # HTTP server for asset queries
-    │   └── AssetRefSubsystem.h                # Asset reference subsystem header
+    │   ├── FathomUELinkModule.h                 # Module interface
+    │   ├── BlueprintAuditor.h                   # Core audit logic + AuditSchemaVersion
+    │   ├── BlueprintAuditCommandlet.h           # CLI commandlet header
+    │   ├── BlueprintAuditSubsystem.h            # Editor subsystem header
+    │   ├── AssetRefHttpServer.h                 # HTTP server for asset queries
+    │   └── AssetRefSubsystem.h                  # Asset reference subsystem header
     └── Private/
-        ├── CoRiderUnrealEngineModule.cpp      # Module startup/shutdown
-        ├── BlueprintAuditor.cpp               # Markdown serialization of Blueprint internals
-        ├── BlueprintAuditCommandlet.cpp       # Headless batch audit entry point
-        ├── BlueprintAuditSubsystem.cpp        # On-save hooks + startup stale check
-        ├── AssetRefHttpServer.cpp             # HTTP endpoint handlers for asset queries
-        └── AssetRefSubsystem.cpp              # Asset registry queries (deps, refs, search)
+        ├── FathomUELinkModule.cpp               # Module startup/shutdown
+        ├── BlueprintAuditor.cpp                 # Markdown serialization of Blueprint internals
+        ├── BlueprintAuditCommandlet.cpp         # Headless batch audit entry point
+        ├── BlueprintAuditSubsystem.cpp          # On-save hooks + startup stale check
+        ├── AssetRefHttpServer.cpp               # HTTP endpoint handlers for asset queries
+        └── AssetRefSubsystem.cpp                # Asset registry queries (deps, refs, search)
 ```
 
 ## Core Files
@@ -30,7 +30,7 @@ CoRider-UnrealEngine/
 
 ## Module Dependencies
 
-From `CoRiderUnrealEngine.Build.cs`:
+From `FathomUELink.Build.cs`:
 
 **Public:**
 - Core, CoreUObject, Engine, EditorSubsystem, HTTPServer

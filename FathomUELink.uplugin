@@ -2,12 +2,12 @@
 	"FileVersion": 3,
 	"Version": 1,
 	"VersionName": "0.1.0",
-	"FriendlyName": "CoRider Unreal Engine",
+	"FriendlyName": "Fathom UE Link",
 	"Description": "Exports Blueprint asset summaries to JSON for external analysis, diffing, and LLM integration.",
 	"Category": "Editor",
-	"CreatedBy": "",
-	"CreatedByURL": "",
-	"DocsURL": "",
+	"CreatedBy": "Tideshift Labs",
+	"CreatedByURL": "https://github.com/Tideshift-Labs",
+	"DocsURL": "https://github.com/Tideshift-Labs/Fathom-UnrealEngine",
 	"MarketplaceURL": "",
 	"CanContainContent": false,
 	"IsBetaVersion": true,
@@ -15,7 +15,7 @@
 	"Installed": false,
 	"Modules": [
 		{
-			"Name": "CoRiderUnrealEngine",
+			"Name": "FathomUELink",
 			"Type": "Editor",
 			"LoadingPhase": "Default"
 		}

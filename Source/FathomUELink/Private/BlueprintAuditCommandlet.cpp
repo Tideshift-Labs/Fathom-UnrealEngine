@@ -41,7 +41,7 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 
 		if (!BP)
 		{
-			UE_LOG(LogCoRider, Error, TEXT("CoRider: Blueprint not found: %s"), *AssetPath);
+			UE_LOG(LogFathomUELink, Error, TEXT("Fathom: Blueprint not found: %s"), *AssetPath);
 			return 1;
 		}
 
@@ -50,7 +50,7 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 			OutputPath = FPaths::ProjectDir() / TEXT("BlueprintAudit.md");
 		}
 
-		UE_LOG(LogCoRider, Display, TEXT("CoRider: Auditing 1 Blueprint..."));
+		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Auditing 1 Blueprint..."));
 
 		const double StartTime = FPlatformTime::Seconds();
 		const FString AuditMarkdown = FBlueprintAuditor::AuditBlueprint(BP);
@@ -60,7 +60,7 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 		}
 		const double Elapsed = FPlatformTime::Seconds() - StartTime;
 
-		UE_LOG(LogCoRider, Display, TEXT("CoRider: Audit complete, wrote %s in %.2fs"), *OutputPath, Elapsed);
+		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Audit complete, wrote %s in %.2fs"), *OutputPath, Elapsed);
 		return 0;
 	}
 
@@ -68,7 +68,7 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 	TArray<FAssetData> AllBlueprints;
 	AssetRegistry.GetAssetsByClass(UBlueprint::StaticClass()->GetClassPathName(), AllBlueprints, true);
 
-	UE_LOG(LogCoRider, Display, TEXT("CoRider: Auditing %d Blueprint(s)..."), AllBlueprints.Num());
+	UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Auditing %d Blueprint(s)..."), AllBlueprints.Num());
 
 	const double StartTime = FPlatformTime::Seconds();
 	int32 SuccessCount = 0;
@@ -90,7 +90,7 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 		if (!FBlueprintAuditor::IsSupportedBlueprintClass(Asset.AssetClassPath))
 		{
 			++SkipCount;
-			UE_LOG(LogCoRider, Verbose, TEXT("CoRider: Skipping unsupported Blueprint class %s (%s)"),
+			UE_LOG(LogFathomUELink, Verbose, TEXT("Fathom: Skipping unsupported Blueprint class %s (%s)"),
 				*Asset.PackageName.ToString(), *Asset.AssetClassPath.ToString());
 			continue;
 		}
@@ -99,7 +99,7 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 		if (!BP)
 		{
 			++FailCount;
-			UE_LOG(LogCoRider, Warning, TEXT("CoRider: Failed to load asset %s"), *Asset.PackageName.ToString());
+			UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load asset %s"), *Asset.PackageName.ToString());
 			continue;
 		}
 
@@ -112,7 +112,7 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 		else
 		{
 			++FailCount;
-			UE_LOG(LogCoRider, Warning, TEXT("CoRider: Failed to write audit for %s"), *BP->GetName());
+			UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to write audit for %s"), *BP->GetName());
 		}
 
 		if (++AssetsSinceGC >= GCInterval)
@@ -123,7 +123,7 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 	}
 
 	const double Elapsed = FPlatformTime::Seconds() - StartTime;
-	UE_LOG(LogCoRider, Display, TEXT("CoRider: Audit complete, %d written, %d skipped, %d failed in %.2fs"),
+	UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Audit complete, %d written, %d skipped, %d failed in %.2fs"),
 		SuccessCount, SkipCount, FailCount, Elapsed);
 	return 0;
 }

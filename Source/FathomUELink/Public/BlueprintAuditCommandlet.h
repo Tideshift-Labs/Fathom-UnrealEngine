@@ -17,7 +17,7 @@
  * (defaults to <ProjectDir>/BlueprintAudit.md).
  */
 UCLASS()
-class CORIDERUNREALENGINE_API UBlueprintAuditCommandlet : public UCommandlet
+class FATHOMUELINK_API UBlueprintAuditCommandlet : public UCommandlet
 {
 	GENERATED_BODY()
 

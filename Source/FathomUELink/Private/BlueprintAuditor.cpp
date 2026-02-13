@@ -30,7 +30,7 @@
 #include "Components/Widget.h"
 #include "Components/PanelWidget.h"
 
-DEFINE_LOG_CATEGORY(LogCoRider);
+DEFINE_LOG_CATEGORY(LogFathomUELink);
 
 // ============================================================================
 // Internal helpers
@@ -113,7 +113,7 @@ FBlueprintAuditData FBlueprintAuditor::GatherBlueprintData(const UBlueprint* BP)
 	Data.SourceFilePath = GetSourceFilePath(Data.PackageName);
 	Data.OutputPath = GetAuditOutputPath(Data.PackageName);
 
-	UE_LOG(LogCoRider, Verbose, TEXT("CoRider: Gathering data for %s (Parent: %s)"),
+	UE_LOG(LogFathomUELink, Verbose, TEXT("Fathom: Gathering data for %s (Parent: %s)"),
 		*Data.Name, BP->ParentClass ? *BP->ParentClass->GetName() : TEXT("None"));
 
 	// --- Variables ---
@@ -875,11 +875,11 @@ bool FBlueprintAuditor::DeleteAuditFile(const FString& FilePath)
 
 	if (FM.Delete(*FilePath))
 	{
-		UE_LOG(LogCoRider, Display, TEXT("CoRider: Deleted audit file %s"), *FilePath);
+		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Deleted audit file %s"), *FilePath);
 		return true;
 	}
 
-	UE_LOG(LogCoRider, Warning, TEXT("CoRider: Failed to delete audit file %s"), *FilePath);
+	UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to delete audit file %s"), *FilePath);
 	return false;
 }
 
@@ -890,7 +890,7 @@ FString FBlueprintAuditor::GetSourceFilePath(const FString& PackageName)
 	{
 		return FPaths::ConvertRelativePathToFull(FilePath);
 	}
-	UE_LOG(LogCoRider, Warning, TEXT("CoRider: Failed to resolve source path for %s"), *PackageName);
+	UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to resolve source path for %s"), *PackageName);
 	return FString();
 }
 
@@ -901,7 +901,7 @@ FString FBlueprintAuditor::ComputeFileHash(const FString& FilePath)
 	{
 		return LexToString(Hash);
 	}
-	UE_LOG(LogCoRider, Warning, TEXT("CoRider: Failed to compute hash for %s"), *FilePath);
+	UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to compute hash for %s"), *FilePath);
 	return FString();
 }
 
@@ -909,11 +909,11 @@ bool FBlueprintAuditor::WriteAuditFile(const FString& Content, const FString& Ou
 {
 	if (FFileHelper::SaveStringToFile(Content, *OutputPath))
 	{
-		UE_LOG(LogCoRider, Verbose, TEXT("CoRider: Audit saved to %s"), *OutputPath);
+		UE_LOG(LogFathomUELink, Verbose, TEXT("Fathom: Audit saved to %s"), *OutputPath);
 		return true;
 	}
 
-	UE_LOG(LogCoRider, Error, TEXT("CoRider: Failed to write %s"), *OutputPath);
+	UE_LOG(LogFathomUELink, Error, TEXT("Fathom: Failed to write %s"), *OutputPath);
 	return false;
 }
 

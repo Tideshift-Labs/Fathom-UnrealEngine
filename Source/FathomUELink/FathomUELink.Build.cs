@@ -1,8 +1,8 @@
 using UnrealBuildTool;
 
-public class CoRiderUnrealEngine : ModuleRules
+public class FathomUELink : ModuleRules
 {
-	public CoRiderUnrealEngine(ReadOnlyTargetRules Target) : base(Target)
+	public FathomUELink(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 

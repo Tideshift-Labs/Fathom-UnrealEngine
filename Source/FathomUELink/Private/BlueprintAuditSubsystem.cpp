@@ -24,7 +24,7 @@ void UBlueprintAuditSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	StaleCheckTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
 		FTickerDelegate::CreateUObject(this, &UBlueprintAuditSubsystem::OnStaleCheckTick));
 
-	UE_LOG(LogCoRider, Display, TEXT("CoRider: Subsystem initialized, watching for Blueprint saves."));
+	UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Subsystem initialized, watching for Blueprint saves."));
 }
 
 void UBlueprintAuditSubsystem::Deinitialize()
@@ -74,12 +74,12 @@ void UBlueprintAuditSubsystem::Deinitialize()
 	const double WaitElapsed = FPlatformTime::Seconds() - WaitStart;
 	if (WaitElapsed >= TimeoutSec)
 	{
-		UE_LOG(LogCoRider, Warning, TEXT("CoRider: Shutdown timed out after %.1fs waiting for background tasks"), WaitElapsed);
+		UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Shutdown timed out after %.1fs waiting for background tasks"), WaitElapsed);
 	}
 
 	PendingFutures.Empty();
 
-	UE_LOG(LogCoRider, Log, TEXT("CoRider: Subsystem deinitialized."));
+	UE_LOG(LogFathomUELink, Log, TEXT("Fathom: Subsystem deinitialized."));
 
 	Super::Deinitialize();
 }
@@ -120,12 +120,12 @@ void UBlueprintAuditSubsystem::OnPackageSaved(const FString& PackageFileName, UP
 				FScopeLock Lock(&InFlightLock);
 				if (InFlightPackages.Contains(Data.PackageName))
 				{
-					UE_LOG(LogCoRider, Verbose, TEXT("CoRider: %s already in-flight, skipping"), *Data.PackageName);
+					UE_LOG(LogFathomUELink, Verbose, TEXT("Fathom: %s already in-flight, skipping"), *Data.PackageName);
 					return true;
 				}
 			}
 
-			UE_LOG(LogCoRider, Verbose, TEXT("CoRider: Dispatching async audit for saved Blueprint %s"), *Data.Name);
+			UE_LOG(LogFathomUELink, Verbose, TEXT("Fathom: Dispatching async audit for saved Blueprint %s"), *Data.Name);
 			DispatchBackgroundWrite(MoveTemp(Data));
 		}
 		return true; // continue iteration
@@ -175,7 +175,7 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 		IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
 		if (AssetRegistry.IsLoadingAssets())
 		{
-			UE_LOG(LogCoRider, Verbose, TEXT("CoRider: Asset registry still loading, deferring stale check..."));
+			UE_LOG(LogFathomUELink, Verbose, TEXT("Fathom: Asset registry still loading, deferring stale check..."));
 			return true; // keep ticking
 		}
 
@@ -205,7 +205,7 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 
 			if (!FBlueprintAuditor::IsSupportedBlueprintClass(Asset.AssetClassPath))
 			{
-				UE_LOG(LogCoRider, Verbose, TEXT("CoRider: Skipping unsupported Blueprint class %s (%s)"),
+				UE_LOG(LogFathomUELink, Verbose, TEXT("Fathom: Skipping unsupported Blueprint class %s (%s)"),
 					*PackageName, *Asset.AssetClassPath.ToString());
 				continue;
 			}
@@ -217,7 +217,7 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 			StaleCheckEntries.Add(MoveTemp(Entry));
 		}
 
-		UE_LOG(LogCoRider, Display, TEXT("CoRider: Stale check Phase 1 complete: %d Blueprints to check"), StaleCheckEntries.Num());
+		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Stale check Phase 1 complete: %d Blueprints to check"), StaleCheckEntries.Num());
 
 		// Dispatch Phase 2 to a background thread: hash comparison
 		// Copy the entries for the background thread (no UObject pointers)
@@ -285,7 +285,7 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 		StaleFailedCount = 0;
 		AssetsSinceGC = 0;
 
-		UE_LOG(LogCoRider, Display, TEXT("CoRider: Stale check Phase 2 complete: %d stale Blueprint(s) to re-audit"), StalePackageNames.Num());
+		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Stale check Phase 2 complete: %d stale Blueprint(s) to re-audit"), StalePackageNames.Num());
 
 		if (StalePackageNames.Num() == 0)
 		{
@@ -312,7 +312,7 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 			if (!BP)
 			{
 				++StaleFailedCount;
-				UE_LOG(LogCoRider, Warning, TEXT("CoRider: Failed to load asset %s for re-audit"), *PackageName);
+				UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load asset %s for re-audit"), *PackageName);
 				continue;
 			}
 
@@ -341,7 +341,7 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 	case EStaleCheckPhase::Done:
 	{
 		const double Elapsed = FPlatformTime::Seconds() - StaleCheckStartTime;
-		UE_LOG(LogCoRider, Display, TEXT("CoRider: Stale check complete: %d scanned, %d re-audited, %d failed in %.2fs"),
+		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Stale check complete: %d scanned, %d re-audited, %d failed in %.2fs"),
 			StaleCheckEntries.Num(), StaleReAuditedCount, StaleFailedCount, Elapsed);
 
 		SweepOrphanedAuditFiles();
@@ -449,6 +449,6 @@ void UBlueprintAuditSubsystem::SweepOrphanedAuditFiles()
 
 	if (SweptCount > 0)
 	{
-		UE_LOG(LogCoRider, Display, TEXT("CoRider: Swept %d orphaned audit file(s)"), SweptCount);
+		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Swept %d orphaned audit file(s)"), SweptCount);
 	}
 }

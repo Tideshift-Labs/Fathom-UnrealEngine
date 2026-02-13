@@ -10,7 +10,7 @@ class IHttpRouter;
  * Binds to a dynamic port (19877-19887) and writes a marker file so the Rider
  * plugin can discover it.
  */
-class CORIDERUNREALENGINE_API FAssetRefHttpServer
+class FATHOMUELINK_API FAssetRefHttpServer
 {
 public:
 	FAssetRefHttpServer();
@@ -29,10 +29,10 @@ private:
 	/** Try to bind the HTTP module router on the given port. */
 	bool TryBind(int32 Port);
 
-	/** Write Saved/.corider-ue-server.json with port, PID, and timestamp. */
+	/** Write Saved/.fathom-ue-server.json with port, PID, and timestamp. */
 	void WriteMarkerFile() const;
 
-	/** Delete Saved/.corider-ue-server.json if it exists. */
+	/** Delete Saved/.fathom-ue-server.json if it exists. */
 	void DeleteMarkerFile() const;
 
 	/** Return the full path to the marker file. */

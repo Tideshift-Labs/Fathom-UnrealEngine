@@ -5,7 +5,7 @@
 1. Symlink or copy into a UE project's `Plugins/` directory:
    ```powershell
    # From the UE project directory; use Junction (no admin required)
-   New-Item -ItemType Junction -Path "Plugins\CoRiderUnrealEngine" -Target "D:\path\to\CoRider-UnrealEngine"
+   New-Item -ItemType Junction -Path "Plugins\FathomUELink" -Target "D:\path\to\CoRider-UnrealEngine"
    ```
 2. Regenerate project files and build the UE project as normal.
 
@@ -30,13 +30,13 @@ Verify output at `<ProjectDir>/Saved/Audit/v<N>/Blueprints/`.
 ## Testing with the Rider Plugin
 
 1. Ensure this plugin is installed in the UE project.
-2. Open the UE project in Rider (with the CoRider plugin).
+2. Open the UE project in Rider (with the Fathom plugin).
 3. Check audit status: `curl http://localhost:19876/blueprint-audit/status`
 4. If stale: `curl http://localhost:19876/blueprint-audit/refresh`
 
 ## Cross-Repo Coordination
 
-This plugin works with the companion [CoRider](https://github.com/kvirani/CoRider) Rider plugin. When modifying the audit schema, keep these in sync:
+This plugin works with the companion [Fathom](https://github.com/Tideshift-Labs/Fathom) Rider plugin. When modifying the audit schema, keep these in sync:
 
 - **Audit schema version**: `FBlueprintAuditor::AuditSchemaVersion` in `BlueprintAuditor.h` (this repo) must match `BlueprintAuditService.AuditSchemaVersion` in the Rider repo. Bump both together when the audit format changes.
 - **Audit output path**: `Saved/Audit/v<N>/Blueprints/...`. The `v<N>` version segment invalidates cached files automatically. Both sides must agree on this path structure.

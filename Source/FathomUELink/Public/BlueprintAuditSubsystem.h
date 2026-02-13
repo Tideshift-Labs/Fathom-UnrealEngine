@@ -36,7 +36,7 @@ struct FStaleCheckEntry
  * freezing the editor UI.
  */
 UCLASS()
-class CORIDERUNREALENGINE_API UBlueprintAuditSubsystem : public UEditorSubsystem
+class FATHOMUELINK_API UBlueprintAuditSubsystem : public UEditorSubsystem
 {
 	GENERATED_BODY()
 

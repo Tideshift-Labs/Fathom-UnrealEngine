@@ -1,4 +1,4 @@
-# CoRider-UnrealEngine
+# Fathom-UnrealEngine
 
 An Unreal Engine editor plugin that exports Blueprint asset summaries to Markdown for external analysis, diffing, and LLM integration.
 
@@ -19,12 +19,12 @@ Create a symbolic link from your project's Plugins folder:
 
 ```powershell
 # From your UE project directory (Junction doesn't require admin or Developer Mode)
-New-Item -ItemType Junction -Path "Plugins\CoRiderUnrealEngine" -Target "path\to\CoRider-UnrealEngine"
+New-Item -ItemType Junction -Path "Plugins\FathomUELink" -Target "path\to\CoRider-UnrealEngine"
 ```
 
 ### Option 2: Copy
 
-Copy the `CoRiderUnrealEngine` folder to your project's `Plugins` directory.
+Copy the `FathomUELink` plugin folder to your project's `Plugins` directory.
 
 ## Usage
 
@@ -59,7 +59,7 @@ The audit produces Markdown optimized for LLM consumption (more token-efficient 
 
 ## Integration with Rider Plugin
 
-This plugin is designed to work with the companion Rider plugin (`CoRider`). The Rider plugin:
+This plugin is designed to work with the companion Rider plugin ([Fathom](https://github.com/Tideshift-Labs/Fathom)). The Rider plugin:
 
 1. Detects when audit data is stale by comparing the `Hash` header field with current file hashes
 2. Automatically triggers the commandlet to refresh stale data
@@ -68,10 +68,10 @@ This plugin is designed to work with the companion Rider plugin (`CoRider`). The
 
 ### Versioning
 
-This plugin's `VersionName` in `CoRiderUnrealEngine.uplugin` is kept in sync with the Rider plugin's `PluginVersion`. The Rider plugin compares these at runtime to detect outdated installations. Do not bump the version here manually; use the bump script in the CoRider repo instead:
+This plugin's `VersionName` in `FathomUELink.uplugin` is kept in sync with the Rider plugin's `PluginVersion`. The Rider plugin compares these at runtime to detect outdated installations. Do not bump the version here manually; use the bump script in the Fathom repo instead:
 
 ```powershell
-# From the CoRider repo root
+# From the Fathom repo root
 .\scripts\bump-version.ps1 -Version X.Y.Z
 ```
 
