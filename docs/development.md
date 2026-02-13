@@ -5,7 +5,7 @@
 1. Symlink or copy into a UE project's `Plugins/` directory:
    ```powershell
    # From the UE project directory; use Junction (no admin required)
-   New-Item -ItemType Junction -Path "Plugins\FathomUELink" -Target "D:\path\to\CoRider-UnrealEngine"
+   New-Item -ItemType Junction -Path "Plugins\FathomUELink" -Target "D:\path\to\Fathom-UnrealEngine"
    ```
 2. Regenerate project files and build the UE project as normal.
 

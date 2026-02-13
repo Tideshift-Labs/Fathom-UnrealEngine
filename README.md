@@ -19,7 +19,7 @@ Create a symbolic link from your project's Plugins folder:
 
 ```powershell
 # From your UE project directory (Junction doesn't require admin or Developer Mode)
-New-Item -ItemType Junction -Path "Plugins\FathomUELink" -Target "path\to\CoRider-UnrealEngine"
+New-Item -ItemType Junction -Path "Plugins\FathomUELink" -Target "path\to\Fathom-UnrealEngine"
 ```
 
 ### Option 2: Copy
@@ -75,7 +75,7 @@ This plugin's `VersionName` in `FathomUELink.uplugin` is kept in sync with the R
 .\scripts\bump-version.ps1 -Version X.Y.Z
 ```
 
-See [CoRider/docs/release.md](../CoRider/docs/release.md) for the full release process.
+See [Fathom/docs/release.md](../Fathom/docs/release.md) for the full release process.
 
 ## Requirements
 

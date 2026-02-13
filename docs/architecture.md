@@ -1,7 +1,7 @@
 # Architecture
 
 ```
-CoRider-UnrealEngine/
+Fathom-UnrealEngine/
 └── Source/FathomUELink/
     ├── FathomUELink.Build.cs                    # Module build rules
     ├── Public/
