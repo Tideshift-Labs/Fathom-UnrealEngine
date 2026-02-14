@@ -5,6 +5,7 @@
 #include "Engine/Blueprint.h"
 #include "Engine/DataAsset.h"
 #include "Engine/DataTable.h"
+#include "StructUtils/UserDefinedStruct.h"
 #include "Engine/SCS_Node.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "Engine/TimelineTemplate.h"
@@ -248,6 +249,7 @@ namespace
 			static const TArray<FString> DefaultPatterns = {
 				TEXT(",Margin=()"),
 				TEXT(",bIsValid=False"),
+				TEXT(",ImageSize=(X=32.0,Y=32.0)"),
 			};
 
 			for (const FString& Pat : DefaultPatterns)
@@ -255,21 +257,43 @@ namespace
 				Result.ReplaceInline(*Pat, TEXT(""));
 			}
 
-			// Strip sub-struct blocks that are all zeros/empty
-			// Match: ,Key=(content) where content is only zeros, commas, parens, dots, X/Y/Z/W/R/G/B/A= and spaces
+			// Strip sub-struct blocks whose numeric values are all known defaults.
+			// Parses identifiers (property names, enum values) as opaque tokens and
+			// checks every numeric literal is 0, 1, or 32 (common FSlateBrush
+			// defaults: zero vectors, white tint, 32x32 image size).
 			auto IsAllDefaultContent = [](const FString& Content) -> bool
 			{
-				for (int32 j = 0; j < Content.Len(); ++j)
+				int32 j = 0;
+				while (j < Content.Len())
 				{
 					const TCHAR C = Content[j];
-					if (C == TEXT('0') || C == TEXT('.') || C == TEXT(',') || C == TEXT('=') ||
-						C == TEXT('(') || C == TEXT(')') || C == TEXT(' ') ||
-						C == TEXT('X') || C == TEXT('Y') || C == TEXT('Z') || C == TEXT('W') ||
-						C == TEXT('R') || C == TEXT('G') || C == TEXT('B') || C == TEXT('A'))
+					if (FChar::IsDigit(C))
 					{
-						continue;
+						const int32 NumStart = j;
+						while (j < Content.Len() && FChar::IsDigit(Content[j])) ++j;
+						if (j < Content.Len() && Content[j] == TEXT('.'))
+						{
+							++j;
+							while (j < Content.Len() && FChar::IsDigit(Content[j])) ++j;
+						}
+						const double Val = FCString::Atod(*Content.Mid(NumStart, j - NumStart));
+						if (Val != 0.0 && Val != 1.0)
+						{
+							return false;
+						}
 					}
-					return false;
+					else if (FChar::IsAlpha(C) || C == TEXT('_'))
+					{
+						while (j < Content.Len() && (FChar::IsAlnum(Content[j]) || Content[j] == TEXT('_'))) ++j;
+					}
+					else if (C == TEXT(',') || C == TEXT('=') || C == TEXT('(') || C == TEXT(')') || C == TEXT(' '))
+					{
+						++j;
+					}
+					else
+					{
+						return false;
+					}
 				}
 				return true;
 			};
@@ -752,7 +776,7 @@ FString FBlueprintAuditor::SerializeToMarkdown(const FBlueprintAuditData& Data)
 		Result += TEXT("\n## Property Overrides\n");
 		for (const FPropertyOverrideData& Override : Data.PropertyOverrides)
 		{
-			Result += FString::Printf(TEXT("- %s = %s\n"), *Override.Name, *Override.Value);
+			Result += FString::Printf(TEXT("- %s = %s\n"), *Override.Name, *CleanExportedValue(Override.Value));
 		}
 	}
 
@@ -1017,7 +1041,7 @@ FDataTableAuditData FBlueprintAuditor::GatherDataTableData(const UDataTable* Dat
 	Data.Path = DataTable->GetPathName();
 	Data.PackageName = DataTable->GetOutermost()->GetName();
 	Data.SourceFilePath = GetSourceFilePath(Data.PackageName);
-	Data.OutputPath = GetAuditOutputPath(Data.PackageName, TEXT("DataTables"));
+	Data.OutputPath = GetAuditOutputPath(Data.PackageName);
 
 	// Row struct info
 	if (const UScriptStruct* RowStruct = DataTable->GetRowStruct())
@@ -1030,7 +1054,9 @@ FDataTableAuditData FBlueprintAuditor::GatherDataTableData(const UDataTable* Dat
 		{
 			FDataTableColumnDef Col;
 			Col.Name = PropIt->GetName();
-			Col.Type = PropIt->GetCPPType();
+			FString ExtendedType;
+			Col.Type = PropIt->GetCPPType(&ExtendedType);
+			Col.Type += ExtendedType;
 			Data.Columns.Add(MoveTemp(Col));
 		}
 	}
@@ -1102,6 +1128,10 @@ FString FBlueprintAuditor::SerializeDataTableToMarkdown(const FDataTableAuditDat
 			for (int32 i = 0; i < Row.Values.Num(); ++i)
 			{
 				const FString CleanedVal = CleanExportedValue(Row.Values[i]);
+				if (CleanedVal.IsEmpty() || CleanedVal == TEXT("()"))
+				{
+					continue;
+				}
 				Result += FString::Printf(TEXT("%d. %s\n"), i + 1, *CleanedVal);
 			}
 		}
@@ -1122,7 +1152,7 @@ FDataAssetAuditData FBlueprintAuditor::GatherDataAssetData(const UDataAsset* Ass
 	Data.Path = Asset->GetPathName();
 	Data.PackageName = Asset->GetOutermost()->GetName();
 	Data.SourceFilePath = GetSourceFilePath(Data.PackageName);
-	Data.OutputPath = GetAuditOutputPath(Data.PackageName, TEXT("DataAssets"));
+	Data.OutputPath = GetAuditOutputPath(Data.PackageName);
 
 	const UClass* AssetClass = Asset->GetClass();
 	Data.NativeClass = AssetClass->GetName();
@@ -1187,6 +1217,102 @@ FString FBlueprintAuditor::SerializeDataAssetToMarkdown(const FDataAssetAuditDat
 		for (const FPropertyOverrideData& Prop : Data.Properties)
 		{
 			Result += FString::Printf(TEXT("- %s = %s\n"), *Prop.Name, *CleanExportedValue(Prop.Value));
+		}
+	}
+
+	return Result;
+}
+
+// ============================================================================
+// UserDefinedStruct gather + serialize
+// ============================================================================
+
+FUserDefinedStructAuditData FBlueprintAuditor::GatherUserDefinedStructData(const UUserDefinedStruct* Struct)
+{
+	FUserDefinedStructAuditData Data;
+
+	Data.Name = Struct->GetName();
+	Data.Path = Struct->GetPathName();
+	Data.PackageName = Struct->GetOutermost()->GetName();
+	Data.SourceFilePath = GetSourceFilePath(Data.PackageName);
+	Data.OutputPath = GetAuditOutputPath(Data.PackageName);
+
+	// Allocate a temp buffer to read default values from
+	const int32 StructSize = Struct->GetStructureSize();
+	uint8* DefaultBuffer = nullptr;
+	if (StructSize > 0)
+	{
+		DefaultBuffer = static_cast<uint8*>(FMemory::Malloc(StructSize, Struct->GetMinAlignment()));
+		Struct->InitializeDefaultValue(DefaultBuffer);
+	}
+
+	for (TFieldIterator<FProperty> PropIt(Struct); PropIt; ++PropIt)
+	{
+		const FProperty* Prop = *PropIt;
+
+		FStructFieldDef Field;
+
+		// UDS properties have authored display names; fall back to internal name
+		Field.Name = Struct->GetAuthoredNameForField(Prop);
+		if (Field.Name.IsEmpty())
+		{
+			Field.Name = Prop->GetName();
+		}
+
+		FString ExtendedType;
+		Field.Type = Prop->GetCPPType(&ExtendedType);
+		Field.Type += ExtendedType;
+
+		// Export default value from the initialized buffer
+		if (DefaultBuffer)
+		{
+			const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(DefaultBuffer);
+			Prop->ExportTextItem_Direct(Field.DefaultValue, ValuePtr, nullptr, nullptr, PPF_None);
+		}
+
+		Data.Fields.Add(MoveTemp(Field));
+	}
+
+	// Clean up the temp buffer
+	if (DefaultBuffer)
+	{
+		Struct->DestroyStruct(DefaultBuffer);
+		FMemory::Free(DefaultBuffer);
+	}
+
+	return Data;
+}
+
+FString FBlueprintAuditor::SerializeUserDefinedStructToMarkdown(const FUserDefinedStructAuditData& Data)
+{
+	FString Result;
+	Result.Reserve(1024);
+
+	// Header
+	Result += FString::Printf(TEXT("# %s\n"), *Data.Name);
+	Result += FString::Printf(TEXT("Path: %s\n"), *Data.Path);
+
+	if (!Data.SourceFilePath.IsEmpty())
+	{
+		Result += FString::Printf(TEXT("Hash: %s\n"), *ComputeFileHash(Data.SourceFilePath));
+	}
+
+	// Fields
+	if (Data.Fields.Num() > 0)
+	{
+		Result += FString::Printf(TEXT("\n## Fields (%d)\n"), Data.Fields.Num());
+		for (int32 i = 0; i < Data.Fields.Num(); ++i)
+		{
+			const FStructFieldDef& Field = Data.Fields[i];
+			const FString CleanedDefault = CleanExportedValue(Field.DefaultValue);
+			if (CleanedDefault.IsEmpty())
+			{
+				Result += FString::Printf(TEXT("%d. %s (%s)\n"), i + 1, *Field.Name, *Field.Type);
+			}
+			else
+			{
+				Result += FString::Printf(TEXT("%d. %s (%s) = %s\n"), i + 1, *Field.Name, *Field.Type, *CleanedDefault);
+			}
 		}
 	}
 
@@ -1259,18 +1385,13 @@ FString FBlueprintAuditor::GetAuditOutputPath(const UBlueprint* BP)
 	return GetAuditOutputPath(BP->GetOutermost()->GetName());
 }
 
-FString FBlueprintAuditor::GetAuditBaseDir(const FString& AssetTypeFolder)
-{
-	const FString VersionDir = FString::Printf(TEXT("v%d"), AuditSchemaVersion);
-	return FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("Saved") / TEXT("Fathom") / TEXT("Audit") / VersionDir / AssetTypeFolder);
-}
-
 FString FBlueprintAuditor::GetAuditBaseDir()
 {
-	return GetAuditBaseDir(TEXT("Blueprints"));
+	const FString VersionDir = FString::Printf(TEXT("v%d"), AuditSchemaVersion);
+	return FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("Saved") / TEXT("Fathom") / TEXT("Audit") / VersionDir);
 }
 
-FString FBlueprintAuditor::GetAuditOutputPath(const FString& PackageName, const FString& AssetTypeFolder)
+FString FBlueprintAuditor::GetAuditOutputPath(const FString& PackageName)
 {
 	// Convert package path like /Game/UI/Widgets/WBP_Foo to relative path UI/Widgets/WBP_Foo
 	FString RelativePath = PackageName;
@@ -1281,12 +1402,7 @@ FString FBlueprintAuditor::GetAuditOutputPath(const FString& PackageName, const 
 		RelativePath.RightChopInline(GamePrefix.Len());
 	}
 
-	return GetAuditBaseDir(AssetTypeFolder) / RelativePath + TEXT(".md");
-}
-
-FString FBlueprintAuditor::GetAuditOutputPath(const FString& PackageName)
-{
-	return GetAuditOutputPath(PackageName, TEXT("Blueprints"));
+	return GetAuditBaseDir() / RelativePath + TEXT(".md");
 }
 
 bool FBlueprintAuditor::DeleteAuditFile(const FString& FilePath)

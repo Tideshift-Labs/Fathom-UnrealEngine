@@ -5,6 +5,7 @@
 #include "Engine/Blueprint.h"
 #include "Engine/DataAsset.h"
 #include "Engine/DataTable.h"
+#include "StructUtils/UserDefinedStruct.h"
 #include "Misc/FileHelper.h"
 
 UBlueprintAuditCommandlet::UBlueprintAuditCommandlet()
@@ -191,6 +192,48 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 
 			FDataAssetAuditData Data = FBlueprintAuditor::GatherDataAssetData(DA);
 			const FString Markdown = FBlueprintAuditor::SerializeDataAssetToMarkdown(Data);
+			if (FBlueprintAuditor::WriteAuditFile(Markdown, Data.OutputPath))
+			{
+				++SuccessCount;
+			}
+			else
+			{
+				++FailCount;
+			}
+
+			if (++AssetsSinceGC >= GCInterval)
+			{
+				CollectGarbage(RF_NoFlags);
+				AssetsSinceGC = 0;
+			}
+		}
+	}
+
+	// --- UserDefinedStruct batch ---
+	{
+		TArray<FAssetData> AllStructs;
+		AssetRegistry.GetAssetsByClass(UUserDefinedStruct::StaticClass()->GetClassPathName(), AllStructs, false);
+
+		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Auditing %d UserDefinedStruct(s)..."), AllStructs.Num());
+
+		for (const FAssetData& Asset : AllStructs)
+		{
+			if (!Asset.PackageName.ToString().StartsWith(TEXT("/Game/")))
+			{
+				++SkipCount;
+				continue;
+			}
+
+			const UUserDefinedStruct* UDS = Cast<UUserDefinedStruct>(Asset.GetAsset());
+			if (!UDS)
+			{
+				++FailCount;
+				UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load UserDefinedStruct %s"), *Asset.PackageName.ToString());
+				continue;
+			}
+
+			FUserDefinedStructAuditData Data = FBlueprintAuditor::GatherUserDefinedStructData(UDS);
+			const FString Markdown = FBlueprintAuditor::SerializeUserDefinedStructToMarkdown(Data);
 			if (FBlueprintAuditor::WriteAuditFile(Markdown, Data.OutputPath))
 			{
 				++SuccessCount;

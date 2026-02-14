@@ -6,6 +6,7 @@
 #include "Engine/Blueprint.h"
 #include "Engine/DataAsset.h"
 #include "Engine/DataTable.h"
+#include "StructUtils/UserDefinedStruct.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
@@ -143,6 +144,21 @@ void UBlueprintAuditSubsystem::OnPackageSaved(const FString& PackageFileName, UP
 			UE_LOG(LogFathomUELink, Verbose, TEXT("Fathom: Dispatching async audit for saved DataTable %s"), *Data.Name);
 			DispatchBackgroundWrite(MoveTemp(Data));
 		}
+		else if (const UUserDefinedStruct* UDS = Cast<UUserDefinedStruct>(Object))
+		{
+			FUserDefinedStructAuditData Data = FBlueprintAuditor::GatherUserDefinedStructData(UDS);
+
+			{
+				FScopeLock Lock(&InFlightLock);
+				if (InFlightPackages.Contains(Data.PackageName))
+				{
+					return true;
+				}
+			}
+
+			UE_LOG(LogFathomUELink, Verbose, TEXT("Fathom: Dispatching async audit for saved UserDefinedStruct %s"), *Data.Name);
+			DispatchBackgroundWrite(MoveTemp(Data));
+		}
 		else if (const UDataAsset* DA = Cast<UDataAsset>(Object))
 		{
 			FDataAssetAuditData Data = FBlueprintAuditor::GatherDataAssetData(DA);
@@ -170,17 +186,12 @@ void UBlueprintAuditSubsystem::OnAssetRemoved(const FAssetData& AssetData)
 		return;
 	}
 
-	if (AssetData.IsInstanceOf(UBlueprint::StaticClass()))
+	if (AssetData.IsInstanceOf(UBlueprint::StaticClass()) ||
+		AssetData.IsInstanceOf(UDataTable::StaticClass()) ||
+		AssetData.IsInstanceOf(UUserDefinedStruct::StaticClass()) ||
+		AssetData.IsInstanceOf(UDataAsset::StaticClass()))
 	{
-		FBlueprintAuditor::DeleteAuditFile(FBlueprintAuditor::GetAuditOutputPath(PackageName, TEXT("Blueprints")));
-	}
-	else if (AssetData.IsInstanceOf(UDataTable::StaticClass()))
-	{
-		FBlueprintAuditor::DeleteAuditFile(FBlueprintAuditor::GetAuditOutputPath(PackageName, TEXT("DataTables")));
-	}
-	else if (AssetData.IsInstanceOf(UDataAsset::StaticClass()))
-	{
-		FBlueprintAuditor::DeleteAuditFile(FBlueprintAuditor::GetAuditOutputPath(PackageName, TEXT("DataAssets")));
+		FBlueprintAuditor::DeleteAuditFile(FBlueprintAuditor::GetAuditOutputPath(PackageName));
 	}
 }
 
@@ -192,17 +203,12 @@ void UBlueprintAuditSubsystem::OnAssetRenamed(const FAssetData& AssetData, const
 		return;
 	}
 
-	if (AssetData.IsInstanceOf(UBlueprint::StaticClass()))
+	if (AssetData.IsInstanceOf(UBlueprint::StaticClass()) ||
+		AssetData.IsInstanceOf(UDataTable::StaticClass()) ||
+		AssetData.IsInstanceOf(UUserDefinedStruct::StaticClass()) ||
+		AssetData.IsInstanceOf(UDataAsset::StaticClass()))
 	{
-		FBlueprintAuditor::DeleteAuditFile(FBlueprintAuditor::GetAuditOutputPath(OldPackageName, TEXT("Blueprints")));
-	}
-	else if (AssetData.IsInstanceOf(UDataTable::StaticClass()))
-	{
-		FBlueprintAuditor::DeleteAuditFile(FBlueprintAuditor::GetAuditOutputPath(OldPackageName, TEXT("DataTables")));
-	}
-	else if (AssetData.IsInstanceOf(UDataAsset::StaticClass()))
-	{
-		FBlueprintAuditor::DeleteAuditFile(FBlueprintAuditor::GetAuditOutputPath(OldPackageName, TEXT("DataAssets")));
+		FBlueprintAuditor::DeleteAuditFile(FBlueprintAuditor::GetAuditOutputPath(OldPackageName));
 	}
 }
 
@@ -253,7 +259,7 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 				FStaleCheckEntry Entry;
 				Entry.PackageName = PackageName;
 				Entry.SourcePath = FBlueprintAuditor::GetSourceFilePath(PackageName);
-				Entry.AuditPath = FBlueprintAuditor::GetAuditOutputPath(PackageName, TEXT("Blueprints"));
+				Entry.AuditPath = FBlueprintAuditor::GetAuditOutputPath(PackageName);
 				Entry.AssetType = EAuditAssetType::Blueprint;
 				StaleCheckEntries.Add(MoveTemp(Entry));
 			}
@@ -275,7 +281,7 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 				FStaleCheckEntry Entry;
 				Entry.PackageName = PackageName;
 				Entry.SourcePath = FBlueprintAuditor::GetSourceFilePath(PackageName);
-				Entry.AuditPath = FBlueprintAuditor::GetAuditOutputPath(PackageName, TEXT("DataTables"));
+				Entry.AuditPath = FBlueprintAuditor::GetAuditOutputPath(PackageName);
 				Entry.AssetType = EAuditAssetType::DataTable;
 				StaleCheckEntries.Add(MoveTemp(Entry));
 			}
@@ -297,8 +303,30 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 				FStaleCheckEntry Entry;
 				Entry.PackageName = PackageName;
 				Entry.SourcePath = FBlueprintAuditor::GetSourceFilePath(PackageName);
-				Entry.AuditPath = FBlueprintAuditor::GetAuditOutputPath(PackageName, TEXT("DataAssets"));
+				Entry.AuditPath = FBlueprintAuditor::GetAuditOutputPath(PackageName);
 				Entry.AssetType = EAuditAssetType::DataAsset;
+				StaleCheckEntries.Add(MoveTemp(Entry));
+			}
+		}
+
+		// UserDefinedStructs
+		{
+			TArray<FAssetData> AllStructs;
+			AssetRegistry.GetAssetsByClass(UUserDefinedStruct::StaticClass()->GetClassPathName(), AllStructs, false);
+
+			for (const FAssetData& Asset : AllStructs)
+			{
+				const FString PackageName = Asset.PackageName.ToString();
+				if (!PackageName.StartsWith(TEXT("/Game/")))
+				{
+					continue;
+				}
+
+				FStaleCheckEntry Entry;
+				Entry.PackageName = PackageName;
+				Entry.SourcePath = FBlueprintAuditor::GetSourceFilePath(PackageName);
+				Entry.AuditPath = FBlueprintAuditor::GetAuditOutputPath(PackageName);
+				Entry.AssetType = EAuditAssetType::UserDefinedStruct;
 				StaleCheckEntries.Add(MoveTemp(Entry));
 			}
 		}
@@ -434,6 +462,20 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 				++StaleReAuditedCount;
 				break;
 			}
+			case EAuditAssetType::UserDefinedStruct:
+			{
+				UUserDefinedStruct* UDS = LoadObject<UUserDefinedStruct>(nullptr, *AssetPath);
+				if (!UDS)
+				{
+					++StaleFailedCount;
+					UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load UserDefinedStruct %s for re-audit"), *PackageName);
+					break;
+				}
+				FUserDefinedStructAuditData Data = FBlueprintAuditor::GatherUserDefinedStructData(UDS);
+				DispatchBackgroundWrite(MoveTemp(Data));
+				++StaleReAuditedCount;
+				break;
+			}
 			}
 
 			if (++AssetsSinceGC >= GCInterval)
@@ -552,6 +594,31 @@ void UBlueprintAuditSubsystem::DispatchBackgroundWrite(FDataAssetAuditData&& Dat
 	PendingFutures.Add(MoveTemp(Future));
 }
 
+void UBlueprintAuditSubsystem::DispatchBackgroundWrite(FUserDefinedStructAuditData&& Data)
+{
+	const FString PackageName = Data.PackageName;
+	const FString OutputPath = Data.OutputPath;
+
+	{
+		FScopeLock Lock(&InFlightLock);
+		InFlightPackages.Add(PackageName);
+	}
+
+	CleanupCompletedFutures();
+
+	TFuture<void> Future = Async(EAsyncExecution::ThreadPool,
+		[this, MovedData = MoveTemp(Data), PackageName, OutputPath]()
+		{
+			const FString Markdown = FBlueprintAuditor::SerializeUserDefinedStructToMarkdown(MovedData);
+			FBlueprintAuditor::WriteAuditFile(Markdown, OutputPath);
+
+			FScopeLock Lock(&InFlightLock);
+			InFlightPackages.Remove(PackageName);
+		});
+
+	PendingFutures.Add(MoveTemp(Future));
+}
+
 void UBlueprintAuditSubsystem::CleanupCompletedFutures()
 {
 	PendingFutures.RemoveAll([](const TFuture<void>& F)
@@ -613,7 +680,5 @@ void UBlueprintAuditSubsystem::SweepOrphanedAuditFilesInDir(const FString& BaseD
 
 void UBlueprintAuditSubsystem::SweepOrphanedAuditFiles()
 {
-	SweepOrphanedAuditFilesInDir(FBlueprintAuditor::GetAuditBaseDir(TEXT("Blueprints")));
-	SweepOrphanedAuditFilesInDir(FBlueprintAuditor::GetAuditBaseDir(TEXT("DataTables")));
-	SweepOrphanedAuditFilesInDir(FBlueprintAuditor::GetAuditBaseDir(TEXT("DataAssets")));
+	SweepOrphanedAuditFilesInDir(FBlueprintAuditor::GetAuditBaseDir());
 }

@@ -6,6 +6,7 @@ class UBlueprint;
 class UDataAsset;
 class UDataTable;
 class UEdGraph;
+class UUserDefinedStruct;
 struct FEdGraphPinType;
 struct FTopLevelAssetPath;
 
@@ -151,6 +152,25 @@ struct FDataAssetAuditData
 	TArray<FPropertyOverrideData> Properties;
 };
 
+// --- UserDefinedStruct audit data ---
+
+struct FStructFieldDef
+{
+	FString Name;
+	FString Type;
+	FString DefaultValue;
+};
+
+struct FUserDefinedStructAuditData
+{
+	FString Name;
+	FString Path;
+	FString PackageName;
+	FString SourceFilePath;
+	FString OutputPath;
+	TArray<FStructFieldDef> Fields;
+};
+
 struct FBlueprintAuditData
 {
 	FString Name;
@@ -181,7 +201,7 @@ struct FBlueprintAuditData
 struct FATHOMUELINK_API FBlueprintAuditor
 {
 	/** Bump when the audit format changes to invalidate all cached audit files. */
-	static constexpr int32 AuditSchemaVersion = 5;
+	static constexpr int32 AuditSchemaVersion = 7;
 
 	// --- Game-thread gather (reads UObject pointers, populates POD structs) ---
 
@@ -221,6 +241,14 @@ struct FATHOMUELINK_API FBlueprintAuditor
 	/** Serialize gathered DataAsset data to Markdown. Computes SourceFileHash from SourceFilePath. Safe on any thread. */
 	static FString SerializeDataAssetToMarkdown(const FDataAssetAuditData& Data);
 
+	// --- UserDefinedStruct gather + serialize ---
+
+	/** Gather all audit data from a UserDefinedStruct into a POD struct. Must be called on the game thread. */
+	static FUserDefinedStructAuditData GatherUserDefinedStructData(const UUserDefinedStruct* Struct);
+
+	/** Serialize gathered UserDefinedStruct data to Markdown. Computes SourceFileHash from SourceFilePath. Safe on any thread. */
+	static FString SerializeUserDefinedStructToMarkdown(const FUserDefinedStructAuditData& Data);
+
 	// --- Legacy synchronous API (used by Commandlet and as a convenience wrapper) ---
 
 	/** Produce a Markdown string summarizing the given Blueprint. Equivalent to SerializeToMarkdown(GatherBlueprintData(BP)). */
@@ -235,18 +263,12 @@ struct FATHOMUELINK_API FBlueprintAuditor
 	/** Human-readable type string for a Blueprint variable pin type. */
 	static FString GetVariableTypeString(const FEdGraphPinType& PinType);
 
-	/** Return the base directory for audit files under a given asset type folder (e.g. "Blueprints", "DataTables"). */
-	static FString GetAuditBaseDir(const FString& AssetTypeFolder);
-
-	/** Return the base directory for Blueprint audit files (convenience wrapper). */
+	/** Return the base directory for all audit files: <ProjectDir>/Saved/Fathom/Audit/v<N>/ */
 	static FString GetAuditBaseDir();
 
-	/** Compute the on-disk output path under a given asset type folder. */
-	static FString GetAuditOutputPath(const FString& PackageName, const FString& AssetTypeFolder);
-
 	/**
-	 * Compute the on-disk output path for a Blueprint's audit file.
-	 * e.g. /Game/UI/Widgets/WBP_Foo  ->  <ProjectDir>/Saved/Fathom/Audit/v<N>/Blueprints/UI/Widgets/WBP_Foo.md
+	 * Compute the on-disk output path for an asset's audit file.
+	 * e.g. /Game/UI/Widgets/WBP_Foo  ->  <ProjectDir>/Saved/Fathom/Audit/v<N>/UI/Widgets/WBP_Foo.md
 	 */
 	static FString GetAuditOutputPath(const UBlueprint* BP);
 	static FString GetAuditOutputPath(const FString& PackageName);
