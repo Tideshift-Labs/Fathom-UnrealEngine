@@ -18,12 +18,21 @@ enum class EStaleCheckPhase : uint8
 	Done
 };
 
+/** The type of asset being audited. */
+enum class EAuditAssetType : uint8
+{
+	Blueprint,
+	DataTable,
+	DataAsset
+};
+
 /** Per-entry data collected in Phase 1, consumed in Phase 2/3. */
 struct FStaleCheckEntry
 {
 	FString PackageName;
 	FString SourcePath;
 	FString AuditPath;
+	EAuditAssetType AssetType = EAuditAssetType::Blueprint;
 };
 
 /**
@@ -60,12 +69,17 @@ private:
 	/** Walk the audit directory and delete audit files whose source .uasset no longer exists. */
 	void SweepOrphanedAuditFiles();
 
+	/** Walk a single audit directory and delete files whose source .uasset no longer exists. */
+	void SweepOrphanedAuditFilesInDir(const FString& BaseDir);
+
 	/**
 	 * Dispatch serialization + file write to a background thread.
 	 * Shared by OnPackageSaved and stale check Phase 3.
 	 * Takes ownership of Data by move.
 	 */
 	void DispatchBackgroundWrite(FBlueprintAuditData&& Data);
+	void DispatchBackgroundWrite(FDataTableAuditData&& Data);
+	void DispatchBackgroundWrite(FDataAssetAuditData&& Data);
 
 	/** Remove completed futures from PendingFutures to prevent unbounded growth. */
 	void CleanupCompletedFutures();
@@ -76,15 +90,15 @@ private:
 	// --- Stale check state machine ---
 	EStaleCheckPhase StaleCheckPhase = EStaleCheckPhase::WaitingForRegistry;
 	TArray<FStaleCheckEntry> StaleCheckEntries;
-	TArray<FString> StalePackageNames;
+	TArray<FStaleCheckEntry> StaleEntries;
 	int32 StaleProcessIndex = 0;
 	int32 StaleReAuditedCount = 0;
 	int32 StaleFailedCount = 0;
 	int32 AssetsSinceGC = 0;
 	double StaleCheckStartTime = 0.0;
 
-	/** Phase 2: background future that computes hashes and returns stale package names. */
-	TFuture<TArray<FString>> Phase2Future;
+	/** Phase 2: background future that computes hashes and returns stale entries. */
+	TFuture<TArray<FStaleCheckEntry>> Phase2Future;
 
 	// --- Background write tracking ---
 	TArray<TFuture<void>> PendingFutures;

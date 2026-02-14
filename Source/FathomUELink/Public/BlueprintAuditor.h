@@ -3,6 +3,8 @@
 #include "CoreMinimal.h"
 
 class UBlueprint;
+class UDataAsset;
+class UDataTable;
 class UEdGraph;
 struct FEdGraphPinType;
 struct FTopLevelAssetPath;
@@ -108,6 +110,47 @@ struct FWidgetAuditData
 	TArray<FWidgetAuditData> Children;
 };
 
+// --- DataTable audit data ---
+
+struct FDataTableColumnDef
+{
+	FString Name;
+	FString Type;
+};
+
+struct FDataTableRowData
+{
+	FString RowName;
+	TArray<FString> Values;
+};
+
+struct FDataTableAuditData
+{
+	FString Name;
+	FString Path;
+	FString PackageName;
+	FString RowStructName;
+	FString RowStructPath;
+	FString SourceFilePath;
+	FString OutputPath;
+	TArray<FDataTableColumnDef> Columns;
+	TArray<FDataTableRowData> Rows;
+};
+
+// --- DataAsset audit data ---
+
+struct FDataAssetAuditData
+{
+	FString Name;
+	FString Path;
+	FString PackageName;
+	FString NativeClass;
+	FString NativeClassPath;
+	FString SourceFilePath;
+	FString OutputPath;
+	TArray<FPropertyOverrideData> Properties;
+};
+
 struct FBlueprintAuditData
 {
 	FString Name;
@@ -138,7 +181,7 @@ struct FBlueprintAuditData
 struct FATHOMUELINK_API FBlueprintAuditor
 {
 	/** Bump when the audit format changes to invalidate all cached audit files. */
-	static constexpr int32 AuditSchemaVersion = 4;
+	static constexpr int32 AuditSchemaVersion = 5;
 
 	// --- Game-thread gather (reads UObject pointers, populates POD structs) ---
 
@@ -162,6 +205,22 @@ struct FATHOMUELINK_API FBlueprintAuditor
 	/** Serialize gathered widget data to a Markdown indented list. Safe on any thread. */
 	static FString SerializeWidgetToMarkdown(const FWidgetAuditData& Data, int32 Indent = 0);
 
+	// --- DataTable gather + serialize ---
+
+	/** Gather all audit data from a DataTable into a POD struct. Must be called on the game thread. */
+	static FDataTableAuditData GatherDataTableData(const UDataTable* DataTable);
+
+	/** Serialize gathered DataTable data to Markdown. Computes SourceFileHash from SourceFilePath. Safe on any thread. */
+	static FString SerializeDataTableToMarkdown(const FDataTableAuditData& Data);
+
+	// --- DataAsset gather + serialize ---
+
+	/** Gather all audit data from a DataAsset into a POD struct. Must be called on the game thread. */
+	static FDataAssetAuditData GatherDataAssetData(const UDataAsset* Asset);
+
+	/** Serialize gathered DataAsset data to Markdown. Computes SourceFileHash from SourceFilePath. Safe on any thread. */
+	static FString SerializeDataAssetToMarkdown(const FDataAssetAuditData& Data);
+
 	// --- Legacy synchronous API (used by Commandlet and as a convenience wrapper) ---
 
 	/** Produce a Markdown string summarizing the given Blueprint. Equivalent to SerializeToMarkdown(GatherBlueprintData(BP)). */
@@ -176,8 +235,14 @@ struct FATHOMUELINK_API FBlueprintAuditor
 	/** Human-readable type string for a Blueprint variable pin type. */
 	static FString GetVariableTypeString(const FEdGraphPinType& PinType);
 
-	/** Return the base directory for all audit files: <ProjectDir>/Saved/Fathom/Audit/v<N>/Blueprints */
+	/** Return the base directory for audit files under a given asset type folder (e.g. "Blueprints", "DataTables"). */
+	static FString GetAuditBaseDir(const FString& AssetTypeFolder);
+
+	/** Return the base directory for Blueprint audit files (convenience wrapper). */
 	static FString GetAuditBaseDir();
+
+	/** Compute the on-disk output path under a given asset type folder. */
+	static FString GetAuditOutputPath(const FString& PackageName, const FString& AssetTypeFolder);
 
 	/**
 	 * Compute the on-disk output path for a Blueprint's audit file.

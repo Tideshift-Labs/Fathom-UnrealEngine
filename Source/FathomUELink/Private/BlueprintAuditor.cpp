@@ -3,6 +3,8 @@
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "Engine/Blueprint.h"
+#include "Engine/DataAsset.h"
+#include "Engine/DataTable.h"
 #include "Engine/SCS_Node.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "Engine/TimelineTemplate.h"
@@ -99,6 +101,221 @@ namespace
 			Name.LeftChopInline(2);
 		}
 		return Name;
+	}
+
+	/**
+	 * Post-process a UE exported property value to be more LLM-friendly:
+	 * - NSLOCTEXT("ns", "key", "Display Text") -> "Display Text"
+	 * - Trailing decimal zeros: 0.500000 -> 0.5
+	 * - Default sub-structs with all-zero fields get collapsed
+	 */
+	FString CleanExportedValue(const FString& Raw)
+	{
+		FString Result = Raw;
+
+		// --- Simplify NSLOCTEXT to just the display string ---
+		// Pattern: NSLOCTEXT("...", "...", "actual text")
+		int32 SearchFrom = 0;
+		while (true)
+		{
+			const int32 NsPos = Result.Find(TEXT("NSLOCTEXT("), ESearchCase::CaseSensitive, ESearchDir::FromStart, SearchFrom);
+			if (NsPos == INDEX_NONE) break;
+
+			// Find the third quoted string (the display text)
+			int32 QuoteCount = 0;
+			int32 DisplayStart = INDEX_NONE;
+			int32 DisplayEnd = INDEX_NONE;
+			bool bInQuote = false;
+			bool bEscaped = false;
+
+			for (int32 i = NsPos + 10; i < Result.Len(); ++i)  // skip "NSLOCTEXT("
+			{
+				const TCHAR Ch = Result[i];
+				if (bEscaped)
+				{
+					bEscaped = false;
+					continue;
+				}
+				if (Ch == TEXT('\\'))
+				{
+					bEscaped = true;
+					continue;
+				}
+				if (Ch == TEXT('"'))
+				{
+					if (!bInQuote)
+					{
+						bInQuote = true;
+						++QuoteCount;
+						if (QuoteCount == 3)
+						{
+							DisplayStart = i + 1;
+						}
+					}
+					else
+					{
+						bInQuote = false;
+						if (QuoteCount == 3)
+						{
+							DisplayEnd = i;
+						}
+					}
+				}
+				if (Ch == TEXT(')') && !bInQuote && QuoteCount >= 3)
+				{
+					// Replace the whole NSLOCTEXT(...) with just the quoted display text
+					if (DisplayStart != INDEX_NONE && DisplayEnd != INDEX_NONE)
+					{
+						const FString DisplayText = TEXT("\"") + Result.Mid(DisplayStart, DisplayEnd - DisplayStart) + TEXT("\"");
+						Result = Result.Left(NsPos) + DisplayText + Result.Mid(i + 1);
+						SearchFrom = NsPos + DisplayText.Len();
+					}
+					else
+					{
+						SearchFrom = i + 1;
+					}
+					break;
+				}
+			}
+
+			// Safety: if we didn't break out of the loop, stop to avoid infinite loop
+			if (SearchFrom <= NsPos)
+			{
+				break;
+			}
+		}
+
+		// --- Trim trailing decimal zeros: 0.500000 -> 0.5, 1.000000 -> 1.0 ---
+		// Match patterns like digits.digits000 and trim, keeping at least one decimal
+		{
+			FString Cleaned;
+			Cleaned.Reserve(Result.Len());
+
+			int32 i = 0;
+			while (i < Result.Len())
+			{
+				// Look for a decimal number pattern
+				if (FChar::IsDigit(Result[i]))
+				{
+					int32 NumStart = i;
+					// Consume integer part
+					while (i < Result.Len() && FChar::IsDigit(Result[i])) ++i;
+
+					if (i < Result.Len() && Result[i] == TEXT('.'))
+					{
+						++i; // consume the dot
+						int32 DecStart = i;
+						while (i < Result.Len() && FChar::IsDigit(Result[i])) ++i;
+						int32 DecEnd = i;
+
+						// Check next char is NOT alphanumeric (to avoid modifying identifiers)
+						if (DecEnd > DecStart && (i >= Result.Len() || !FChar::IsAlnum(Result[i])))
+						{
+							// Trim trailing zeros, but keep at least one digit after dot
+							int32 TrimEnd = DecEnd;
+							while (TrimEnd > DecStart + 1 && Result[TrimEnd - 1] == TEXT('0'))
+							{
+								--TrimEnd;
+							}
+							Cleaned += Result.Mid(NumStart, DecStart - NumStart); // integer part + dot
+							Cleaned += Result.Mid(DecStart, TrimEnd - DecStart);  // trimmed decimals
+						}
+						else
+						{
+							// Not a float we want to trim, keep as-is
+							Cleaned += Result.Mid(NumStart, i - NumStart);
+						}
+					}
+					else
+					{
+						Cleaned += Result.Mid(NumStart, i - NumStart);
+					}
+				}
+				else
+				{
+					Cleaned += Result[i];
+					++i;
+				}
+			}
+			Result = MoveTemp(Cleaned);
+		}
+
+		// --- Strip known all-default sub-structs ---
+		// Remove patterns like: Margin=(), OutlineSettings=(...all zeros...), UVRegion=(...all zeros...)
+		// Strategy: remove key=(...) blocks where the parenthesized content is all zeros/defaults
+		{
+			// Common default patterns to strip entirely when they appear as key=value
+			static const TArray<FString> DefaultPatterns = {
+				TEXT(",Margin=()"),
+				TEXT(",bIsValid=False"),
+			};
+
+			for (const FString& Pat : DefaultPatterns)
+			{
+				Result.ReplaceInline(*Pat, TEXT(""));
+			}
+
+			// Strip sub-struct blocks that are all zeros/empty
+			// Match: ,Key=(content) where content is only zeros, commas, parens, dots, X/Y/Z/W/R/G/B/A= and spaces
+			auto IsAllDefaultContent = [](const FString& Content) -> bool
+			{
+				for (int32 j = 0; j < Content.Len(); ++j)
+				{
+					const TCHAR C = Content[j];
+					if (C == TEXT('0') || C == TEXT('.') || C == TEXT(',') || C == TEXT('=') ||
+						C == TEXT('(') || C == TEXT(')') || C == TEXT(' ') ||
+						C == TEXT('X') || C == TEXT('Y') || C == TEXT('Z') || C == TEXT('W') ||
+						C == TEXT('R') || C == TEXT('G') || C == TEXT('B') || C == TEXT('A'))
+					{
+						continue;
+					}
+					return false;
+				}
+				return true;
+			};
+
+			// Look for ,SubStruct=(...) blocks with default-only content
+			static const TArray<FString> SubStructPrefixes = {
+				TEXT(",OverrideBrush="),
+				TEXT(",OutlineSettings="),
+				TEXT(",UVRegion="),
+			};
+
+			for (const FString& Prefix : SubStructPrefixes)
+			{
+				int32 Pos = 0;
+				while (true)
+				{
+					Pos = Result.Find(Prefix, ESearchCase::CaseSensitive, ESearchDir::FromStart, Pos);
+					if (Pos == INDEX_NONE) break;
+
+					// Find the matching close paren
+					int32 ParenStart = Pos + Prefix.Len();
+					if (ParenStart < Result.Len() && Result[ParenStart] == TEXT('('))
+					{
+						int32 Depth = 1;
+						int32 ParenEnd = ParenStart + 1;
+						while (ParenEnd < Result.Len() && Depth > 0)
+						{
+							if (Result[ParenEnd] == TEXT('(')) ++Depth;
+							else if (Result[ParenEnd] == TEXT(')')) --Depth;
+							++ParenEnd;
+						}
+
+						const FString Content = Result.Mid(ParenStart + 1, ParenEnd - ParenStart - 2);
+						if (IsAllDefaultContent(Content))
+						{
+							Result = Result.Left(Pos) + Result.Mid(ParenEnd);
+							continue; // don't advance Pos, check same position for more
+						}
+					}
+
+					Pos += Prefix.Len();
+				}
+			}
+		}
+
+		return Result;
 	}
 }
 
@@ -789,6 +1006,194 @@ FString FBlueprintAuditor::SerializeWidgetToMarkdown(const FWidgetAuditData& Dat
 }
 
 // ============================================================================
+// DataTable gather + serialize
+// ============================================================================
+
+FDataTableAuditData FBlueprintAuditor::GatherDataTableData(const UDataTable* DataTable)
+{
+	FDataTableAuditData Data;
+
+	Data.Name = DataTable->GetName();
+	Data.Path = DataTable->GetPathName();
+	Data.PackageName = DataTable->GetOutermost()->GetName();
+	Data.SourceFilePath = GetSourceFilePath(Data.PackageName);
+	Data.OutputPath = GetAuditOutputPath(Data.PackageName, TEXT("DataTables"));
+
+	// Row struct info
+	if (const UScriptStruct* RowStruct = DataTable->GetRowStruct())
+	{
+		Data.RowStructName = RowStruct->GetName();
+		Data.RowStructPath = RowStruct->GetPathName();
+
+		// Column schema from struct properties
+		for (TFieldIterator<FProperty> PropIt(RowStruct); PropIt; ++PropIt)
+		{
+			FDataTableColumnDef Col;
+			Col.Name = PropIt->GetName();
+			Col.Type = PropIt->GetCPPType();
+			Data.Columns.Add(MoveTemp(Col));
+		}
+	}
+
+	// Row data
+	const TMap<FName, uint8*>& RowMap = DataTable->GetRowMap();
+	const UScriptStruct* RowStruct = DataTable->GetRowStruct();
+
+	for (const auto& Pair : RowMap)
+	{
+		FDataTableRowData RowData;
+		RowData.RowName = Pair.Key.ToString();
+
+		if (RowStruct && Pair.Value)
+		{
+			for (TFieldIterator<FProperty> PropIt(RowStruct); PropIt; ++PropIt)
+			{
+				const FProperty* Prop = *PropIt;
+				const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Pair.Value);
+				FString ValueStr;
+				Prop->ExportTextItem_Direct(ValueStr, ValuePtr, nullptr, nullptr, PPF_None);
+				RowData.Values.Add(MoveTemp(ValueStr));
+			}
+		}
+
+		Data.Rows.Add(MoveTemp(RowData));
+	}
+
+	return Data;
+}
+
+FString FBlueprintAuditor::SerializeDataTableToMarkdown(const FDataTableAuditData& Data)
+{
+	FString Result;
+	Result.Reserve(4096);
+
+	// Header
+	Result += FString::Printf(TEXT("# %s\n"), *Data.Name);
+	Result += FString::Printf(TEXT("Path: %s\n"), *Data.Path);
+	Result += FString::Printf(TEXT("RowStruct: %s\n"), *Data.RowStructName);
+	if (!Data.RowStructPath.IsEmpty())
+	{
+		Result += FString::Printf(TEXT("RowStructPath: %s\n"), *Data.RowStructPath);
+	}
+
+	if (!Data.SourceFilePath.IsEmpty())
+	{
+		Result += FString::Printf(TEXT("Hash: %s\n"), *ComputeFileHash(Data.SourceFilePath));
+	}
+
+	// Numbered column legend
+	if (Data.Columns.Num() > 0)
+	{
+		Result += FString::Printf(TEXT("\n## Columns (%d)\n"), Data.Columns.Num());
+		for (int32 i = 0; i < Data.Columns.Num(); ++i)
+		{
+			Result += FString::Printf(TEXT("%d. %s (%s)\n"), i + 1, *Data.Columns[i].Name, *Data.Columns[i].Type);
+		}
+	}
+
+	// Per-row sections with numbered values
+	if (Data.Rows.Num() > 0)
+	{
+		Result += FString::Printf(TEXT("\n## Rows (%d)\n"), Data.Rows.Num());
+
+		for (const FDataTableRowData& Row : Data.Rows)
+		{
+			Result += FString::Printf(TEXT("\n### %s\n"), *Row.RowName);
+			for (int32 i = 0; i < Row.Values.Num(); ++i)
+			{
+				const FString CleanedVal = CleanExportedValue(Row.Values[i]);
+				Result += FString::Printf(TEXT("%d. %s\n"), i + 1, *CleanedVal);
+			}
+		}
+	}
+
+	return Result;
+}
+
+// ============================================================================
+// DataAsset gather + serialize
+// ============================================================================
+
+FDataAssetAuditData FBlueprintAuditor::GatherDataAssetData(const UDataAsset* Asset)
+{
+	FDataAssetAuditData Data;
+
+	Data.Name = Asset->GetName();
+	Data.Path = Asset->GetPathName();
+	Data.PackageName = Asset->GetOutermost()->GetName();
+	Data.SourceFilePath = GetSourceFilePath(Data.PackageName);
+	Data.OutputPath = GetAuditOutputPath(Data.PackageName, TEXT("DataAssets"));
+
+	const UClass* AssetClass = Asset->GetClass();
+	Data.NativeClass = AssetClass->GetName();
+	Data.NativeClassPath = AssetClass->GetPathName();
+
+	// CDO diff: compare asset properties against the class default object
+	const UObject* CDO = AssetClass->GetDefaultObject();
+
+	for (TFieldIterator<FProperty> PropIt(AssetClass); PropIt; ++PropIt)
+	{
+		const FProperty* Prop = *PropIt;
+
+		// Skip properties owned by the engine base class (UDataAsset itself)
+		if (Prop->GetOwner<UClass>() == UDataAsset::StaticClass())
+		{
+			continue;
+		}
+
+		if (Prop->HasAnyPropertyFlags(CPF_Transient))
+		{
+			continue;
+		}
+
+		const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Asset);
+		const void* DefaultPtr = Prop->ContainerPtrToValuePtr<void>(CDO);
+
+		if (!Prop->Identical(ValuePtr, DefaultPtr))
+		{
+			FPropertyOverrideData Override;
+			Override.Name = Prop->GetName();
+			Prop->ExportText_InContainer(0, Override.Value, Asset, nullptr, nullptr, 0);
+			Data.Properties.Add(MoveTemp(Override));
+		}
+	}
+
+	return Data;
+}
+
+FString FBlueprintAuditor::SerializeDataAssetToMarkdown(const FDataAssetAuditData& Data)
+{
+	FString Result;
+	Result.Reserve(2048);
+
+	// Header
+	Result += FString::Printf(TEXT("# %s\n"), *Data.Name);
+	Result += FString::Printf(TEXT("Path: %s\n"), *Data.Path);
+	Result += FString::Printf(TEXT("Class: %s\n"), *Data.NativeClass);
+	if (!Data.NativeClassPath.IsEmpty())
+	{
+		Result += FString::Printf(TEXT("ClassPath: %s\n"), *Data.NativeClassPath);
+	}
+
+	if (!Data.SourceFilePath.IsEmpty())
+	{
+		Result += FString::Printf(TEXT("Hash: %s\n"), *ComputeFileHash(Data.SourceFilePath));
+	}
+
+	// Properties
+	if (Data.Properties.Num() > 0)
+	{
+		Result += TEXT("\n## Properties\n");
+		for (const FPropertyOverrideData& Prop : Data.Properties)
+		{
+			Result += FString::Printf(TEXT("- %s = %s\n"), *Prop.Name, *CleanExportedValue(Prop.Value));
+		}
+	}
+
+	return Result;
+}
+
+// ============================================================================
 // Legacy synchronous API (thin wrappers over Gather + Serialize)
 // ============================================================================
 
@@ -854,13 +1259,18 @@ FString FBlueprintAuditor::GetAuditOutputPath(const UBlueprint* BP)
 	return GetAuditOutputPath(BP->GetOutermost()->GetName());
 }
 
-FString FBlueprintAuditor::GetAuditBaseDir()
+FString FBlueprintAuditor::GetAuditBaseDir(const FString& AssetTypeFolder)
 {
 	const FString VersionDir = FString::Printf(TEXT("v%d"), AuditSchemaVersion);
-	return FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("Saved") / TEXT("Fathom") / TEXT("Audit") / VersionDir / TEXT("Blueprints"));
+	return FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("Saved") / TEXT("Fathom") / TEXT("Audit") / VersionDir / AssetTypeFolder);
 }
 
-FString FBlueprintAuditor::GetAuditOutputPath(const FString& PackageName)
+FString FBlueprintAuditor::GetAuditBaseDir()
+{
+	return GetAuditBaseDir(TEXT("Blueprints"));
+}
+
+FString FBlueprintAuditor::GetAuditOutputPath(const FString& PackageName, const FString& AssetTypeFolder)
 {
 	// Convert package path like /Game/UI/Widgets/WBP_Foo to relative path UI/Widgets/WBP_Foo
 	FString RelativePath = PackageName;
@@ -871,7 +1281,12 @@ FString FBlueprintAuditor::GetAuditOutputPath(const FString& PackageName)
 		RelativePath.RightChopInline(GamePrefix.Len());
 	}
 
-	return GetAuditBaseDir() / RelativePath + TEXT(".md");
+	return GetAuditBaseDir(AssetTypeFolder) / RelativePath + TEXT(".md");
+}
+
+FString FBlueprintAuditor::GetAuditOutputPath(const FString& PackageName)
+{
+	return GetAuditOutputPath(PackageName, TEXT("Blueprints"));
 }
 
 bool FBlueprintAuditor::DeleteAuditFile(const FString& FilePath)

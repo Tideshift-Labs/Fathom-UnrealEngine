@@ -3,6 +3,8 @@
 #include "BlueprintAuditor.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/Blueprint.h"
+#include "Engine/DataAsset.h"
+#include "Engine/DataTable.h"
 #include "Misc/FileHelper.h"
 
 UBlueprintAuditCommandlet::UBlueprintAuditCommandlet()
@@ -119,6 +121,90 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 		{
 			CollectGarbage(RF_NoFlags);
 			AssetsSinceGC = 0;
+		}
+	}
+
+	// --- DataTable batch ---
+	{
+		TArray<FAssetData> AllDataTables;
+		AssetRegistry.GetAssetsByClass(UDataTable::StaticClass()->GetClassPathName(), AllDataTables, false);
+
+		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Auditing %d DataTable(s)..."), AllDataTables.Num());
+
+		for (const FAssetData& Asset : AllDataTables)
+		{
+			if (!Asset.PackageName.ToString().StartsWith(TEXT("/Game/")))
+			{
+				++SkipCount;
+				continue;
+			}
+
+			const UDataTable* DT = Cast<UDataTable>(Asset.GetAsset());
+			if (!DT)
+			{
+				++FailCount;
+				UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load DataTable %s"), *Asset.PackageName.ToString());
+				continue;
+			}
+
+			FDataTableAuditData Data = FBlueprintAuditor::GatherDataTableData(DT);
+			const FString Markdown = FBlueprintAuditor::SerializeDataTableToMarkdown(Data);
+			if (FBlueprintAuditor::WriteAuditFile(Markdown, Data.OutputPath))
+			{
+				++SuccessCount;
+			}
+			else
+			{
+				++FailCount;
+			}
+
+			if (++AssetsSinceGC >= GCInterval)
+			{
+				CollectGarbage(RF_NoFlags);
+				AssetsSinceGC = 0;
+			}
+		}
+	}
+
+	// --- DataAsset batch ---
+	{
+		TArray<FAssetData> AllDataAssets;
+		AssetRegistry.GetAssetsByClass(UDataAsset::StaticClass()->GetClassPathName(), AllDataAssets, true);
+
+		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Auditing %d DataAsset(s)..."), AllDataAssets.Num());
+
+		for (const FAssetData& Asset : AllDataAssets)
+		{
+			if (!Asset.PackageName.ToString().StartsWith(TEXT("/Game/")))
+			{
+				++SkipCount;
+				continue;
+			}
+
+			const UDataAsset* DA = Cast<UDataAsset>(Asset.GetAsset());
+			if (!DA)
+			{
+				++FailCount;
+				UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load DataAsset %s"), *Asset.PackageName.ToString());
+				continue;
+			}
+
+			FDataAssetAuditData Data = FBlueprintAuditor::GatherDataAssetData(DA);
+			const FString Markdown = FBlueprintAuditor::SerializeDataAssetToMarkdown(Data);
+			if (FBlueprintAuditor::WriteAuditFile(Markdown, Data.OutputPath))
+			{
+				++SuccessCount;
+			}
+			else
+			{
+				++FailCount;
+			}
+
+			if (++AssetsSinceGC >= GCInterval)
+			{
+				CollectGarbage(RF_NoFlags);
+				AssetsSinceGC = 0;
+			}
 		}
 	}
 

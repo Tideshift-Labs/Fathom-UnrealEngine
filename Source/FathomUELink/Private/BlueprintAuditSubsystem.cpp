@@ -4,6 +4,8 @@
 #include "Async/Async.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/Blueprint.h"
+#include "Engine/DataAsset.h"
+#include "Engine/DataTable.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
@@ -103,7 +105,7 @@ void UBlueprintAuditSubsystem::OnPackageSaved(const FString& PackageFileName, UP
 		return;
 	}
 
-	// Walk all objects in the saved package, looking for Blueprints
+	// Walk all objects in the saved package, looking for auditable assets
 	ForEachObjectWithPackage(Package, [this](UObject* Object)
 	{
 		if (const UBlueprint* BP = Cast<UBlueprint>(Object))
@@ -112,10 +114,8 @@ void UBlueprintAuditSubsystem::OnPackageSaved(const FString& PackageFileName, UP
 			{
 				return true; // skip unsupported Blueprint subclasses
 			}
-			// Gather data on the game thread (fast, reads UObject pointers)
 			FBlueprintAuditData Data = FBlueprintAuditor::GatherBlueprintData(BP);
 
-			// Check dedup: skip if already in-flight
 			{
 				FScopeLock Lock(&InFlightLock);
 				if (InFlightPackages.Contains(Data.PackageName))
@@ -126,6 +126,36 @@ void UBlueprintAuditSubsystem::OnPackageSaved(const FString& PackageFileName, UP
 			}
 
 			UE_LOG(LogFathomUELink, Verbose, TEXT("Fathom: Dispatching async audit for saved Blueprint %s"), *Data.Name);
+			DispatchBackgroundWrite(MoveTemp(Data));
+		}
+		else if (const UDataTable* DT = Cast<UDataTable>(Object))
+		{
+			FDataTableAuditData Data = FBlueprintAuditor::GatherDataTableData(DT);
+
+			{
+				FScopeLock Lock(&InFlightLock);
+				if (InFlightPackages.Contains(Data.PackageName))
+				{
+					return true;
+				}
+			}
+
+			UE_LOG(LogFathomUELink, Verbose, TEXT("Fathom: Dispatching async audit for saved DataTable %s"), *Data.Name);
+			DispatchBackgroundWrite(MoveTemp(Data));
+		}
+		else if (const UDataAsset* DA = Cast<UDataAsset>(Object))
+		{
+			FDataAssetAuditData Data = FBlueprintAuditor::GatherDataAssetData(DA);
+
+			{
+				FScopeLock Lock(&InFlightLock);
+				if (InFlightPackages.Contains(Data.PackageName))
+				{
+					return true;
+				}
+			}
+
+			UE_LOG(LogFathomUELink, Verbose, TEXT("Fathom: Dispatching async audit for saved DataAsset %s"), *Data.Name);
 			DispatchBackgroundWrite(MoveTemp(Data));
 		}
 		return true; // continue iteration
@@ -140,30 +170,40 @@ void UBlueprintAuditSubsystem::OnAssetRemoved(const FAssetData& AssetData)
 		return;
 	}
 
-	if (!AssetData.IsInstanceOf(UBlueprint::StaticClass()))
+	if (AssetData.IsInstanceOf(UBlueprint::StaticClass()))
 	{
-		return;
+		FBlueprintAuditor::DeleteAuditFile(FBlueprintAuditor::GetAuditOutputPath(PackageName, TEXT("Blueprints")));
 	}
-
-	const FString AuditPath = FBlueprintAuditor::GetAuditOutputPath(PackageName);
-	FBlueprintAuditor::DeleteAuditFile(AuditPath);
+	else if (AssetData.IsInstanceOf(UDataTable::StaticClass()))
+	{
+		FBlueprintAuditor::DeleteAuditFile(FBlueprintAuditor::GetAuditOutputPath(PackageName, TEXT("DataTables")));
+	}
+	else if (AssetData.IsInstanceOf(UDataAsset::StaticClass()))
+	{
+		FBlueprintAuditor::DeleteAuditFile(FBlueprintAuditor::GetAuditOutputPath(PackageName, TEXT("DataAssets")));
+	}
 }
 
 void UBlueprintAuditSubsystem::OnAssetRenamed(const FAssetData& AssetData, const FString& OldObjectPath)
 {
-	if (!AssetData.IsInstanceOf(UBlueprint::StaticClass()))
-	{
-		return;
-	}
-
 	const FString OldPackageName = FPackageName::ObjectPathToPackageName(OldObjectPath);
 	if (!OldPackageName.StartsWith(TEXT("/Game/")))
 	{
 		return;
 	}
 
-	const FString OldAuditPath = FBlueprintAuditor::GetAuditOutputPath(OldPackageName);
-	FBlueprintAuditor::DeleteAuditFile(OldAuditPath);
+	if (AssetData.IsInstanceOf(UBlueprint::StaticClass()))
+	{
+		FBlueprintAuditor::DeleteAuditFile(FBlueprintAuditor::GetAuditOutputPath(OldPackageName, TEXT("Blueprints")));
+	}
+	else if (AssetData.IsInstanceOf(UDataTable::StaticClass()))
+	{
+		FBlueprintAuditor::DeleteAuditFile(FBlueprintAuditor::GetAuditOutputPath(OldPackageName, TEXT("DataTables")));
+	}
+	else if (AssetData.IsInstanceOf(UDataAsset::StaticClass()))
+	{
+		FBlueprintAuditor::DeleteAuditFile(FBlueprintAuditor::GetAuditOutputPath(OldPackageName, TEXT("DataAssets")));
+	}
 }
 
 bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
@@ -187,44 +227,89 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 	{
 		StaleCheckStartTime = FPlatformTime::Seconds();
 
-		// Query the asset registry for all /Game/ Blueprints
 		IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
-		TArray<FAssetData> AllBlueprints;
-		AssetRegistry.GetAssetsByClass(UBlueprint::StaticClass()->GetClassPathName(), AllBlueprints, true);
-
 		StaleCheckEntries.Reset();
-		StaleCheckEntries.Reserve(AllBlueprints.Num());
 
-		for (const FAssetData& Asset : AllBlueprints)
+		// Blueprints
 		{
-			const FString PackageName = Asset.PackageName.ToString();
-			if (!PackageName.StartsWith(TEXT("/Game/")))
-			{
-				continue;
-			}
+			TArray<FAssetData> AllBlueprints;
+			AssetRegistry.GetAssetsByClass(UBlueprint::StaticClass()->GetClassPathName(), AllBlueprints, true);
 
-			if (!FBlueprintAuditor::IsSupportedBlueprintClass(Asset.AssetClassPath))
+			for (const FAssetData& Asset : AllBlueprints)
 			{
-				UE_LOG(LogFathomUELink, Verbose, TEXT("Fathom: Skipping unsupported Blueprint class %s (%s)"),
-					*PackageName, *Asset.AssetClassPath.ToString());
-				continue;
-			}
+				const FString PackageName = Asset.PackageName.ToString();
+				if (!PackageName.StartsWith(TEXT("/Game/")))
+				{
+					continue;
+				}
 
-			FStaleCheckEntry Entry;
-			Entry.PackageName = PackageName;
-			Entry.SourcePath = FBlueprintAuditor::GetSourceFilePath(PackageName);
-			Entry.AuditPath = FBlueprintAuditor::GetAuditOutputPath(PackageName);
-			StaleCheckEntries.Add(MoveTemp(Entry));
+				if (!FBlueprintAuditor::IsSupportedBlueprintClass(Asset.AssetClassPath))
+				{
+					UE_LOG(LogFathomUELink, Verbose, TEXT("Fathom: Skipping unsupported Blueprint class %s (%s)"),
+						*PackageName, *Asset.AssetClassPath.ToString());
+					continue;
+				}
+
+				FStaleCheckEntry Entry;
+				Entry.PackageName = PackageName;
+				Entry.SourcePath = FBlueprintAuditor::GetSourceFilePath(PackageName);
+				Entry.AuditPath = FBlueprintAuditor::GetAuditOutputPath(PackageName, TEXT("Blueprints"));
+				Entry.AssetType = EAuditAssetType::Blueprint;
+				StaleCheckEntries.Add(MoveTemp(Entry));
+			}
 		}
 
-		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Stale check Phase 1 complete: %d Blueprints to check"), StaleCheckEntries.Num());
+		// DataTables
+		{
+			TArray<FAssetData> AllDataTables;
+			AssetRegistry.GetAssetsByClass(UDataTable::StaticClass()->GetClassPathName(), AllDataTables, false);
+
+			for (const FAssetData& Asset : AllDataTables)
+			{
+				const FString PackageName = Asset.PackageName.ToString();
+				if (!PackageName.StartsWith(TEXT("/Game/")))
+				{
+					continue;
+				}
+
+				FStaleCheckEntry Entry;
+				Entry.PackageName = PackageName;
+				Entry.SourcePath = FBlueprintAuditor::GetSourceFilePath(PackageName);
+				Entry.AuditPath = FBlueprintAuditor::GetAuditOutputPath(PackageName, TEXT("DataTables"));
+				Entry.AssetType = EAuditAssetType::DataTable;
+				StaleCheckEntries.Add(MoveTemp(Entry));
+			}
+		}
+
+		// DataAssets
+		{
+			TArray<FAssetData> AllDataAssets;
+			AssetRegistry.GetAssetsByClass(UDataAsset::StaticClass()->GetClassPathName(), AllDataAssets, true);
+
+			for (const FAssetData& Asset : AllDataAssets)
+			{
+				const FString PackageName = Asset.PackageName.ToString();
+				if (!PackageName.StartsWith(TEXT("/Game/")))
+				{
+					continue;
+				}
+
+				FStaleCheckEntry Entry;
+				Entry.PackageName = PackageName;
+				Entry.SourcePath = FBlueprintAuditor::GetSourceFilePath(PackageName);
+				Entry.AuditPath = FBlueprintAuditor::GetAuditOutputPath(PackageName, TEXT("DataAssets"));
+				Entry.AssetType = EAuditAssetType::DataAsset;
+				StaleCheckEntries.Add(MoveTemp(Entry));
+			}
+		}
+
+		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Stale check Phase 1 complete: %d assets to check"), StaleCheckEntries.Num());
 
 		// Dispatch Phase 2 to a background thread: hash comparison
-		// Copy the entries for the background thread (no UObject pointers)
 		TArray<FStaleCheckEntry> EntriesCopy = StaleCheckEntries;
-		Phase2Future = Async(EAsyncExecution::ThreadPool, [Entries = MoveTemp(EntriesCopy)]() -> TArray<FString>
+		Phase2Future = Async(EAsyncExecution::ThreadPool, [Entries = MoveTemp(EntriesCopy)]() -> TArray<FStaleCheckEntry>
 		{
-			TArray<FString> StaleNames;
+			TArray<FStaleCheckEntry> StaleResults;
 
 			for (const FStaleCheckEntry& Entry : Entries)
 			{
@@ -233,14 +318,12 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 					continue;
 				}
 
-				// Compute current .uasset hash
 				const FString CurrentHash = FBlueprintAuditor::ComputeFileHash(Entry.SourcePath);
 				if (CurrentHash.IsEmpty())
 				{
 					continue;
 				}
 
-				// Read stored hash from the markdown audit file's "Hash: " header line
 				FString StoredHash;
 				FString FileContent;
 				if (FFileHelper::LoadFileToString(FileContent, *Entry.AuditPath))
@@ -261,11 +344,11 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 
 				if (CurrentHash != StoredHash)
 				{
-					StaleNames.Add(Entry.PackageName);
+					StaleResults.Add(Entry);
 				}
 			}
 
-			return StaleNames;
+			return StaleResults;
 		});
 
 		StaleCheckPhase = EStaleCheckPhase::BackgroundHash;
@@ -279,15 +362,15 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 			return true; // keep polling
 		}
 
-		StalePackageNames = Phase2Future.Get();
+		StaleEntries = Phase2Future.Get();
 		StaleProcessIndex = 0;
 		StaleReAuditedCount = 0;
 		StaleFailedCount = 0;
 		AssetsSinceGC = 0;
 
-		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Stale check Phase 2 complete: %d stale Blueprint(s) to re-audit"), StalePackageNames.Num());
+		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Stale check Phase 2 complete: %d stale asset(s) to re-audit"), StaleEntries.Num());
 
-		if (StalePackageNames.Num() == 0)
+		if (StaleEntries.Num() == 0)
 		{
 			StaleCheckPhase = EStaleCheckPhase::Done;
 			return true;
@@ -299,27 +382,59 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 
 	case EStaleCheckPhase::ProcessingStale:
 	{
-		// Process a batch of stale Blueprints per tick
-		const int32 BatchEnd = FMath::Min(StaleProcessIndex + StaleProcessBatchSize, StalePackageNames.Num());
+		const int32 BatchEnd = FMath::Min(StaleProcessIndex + StaleProcessBatchSize, StaleEntries.Num());
 
 		for (int32 i = StaleProcessIndex; i < BatchEnd; ++i)
 		{
-			const FString& PackageName = StalePackageNames[i];
-
-			// Load the Blueprint on the game thread
+			const FStaleCheckEntry& StaleEntry = StaleEntries[i];
+			const FString& PackageName = StaleEntry.PackageName;
 			const FString AssetPath = PackageName + TEXT(".") + FPackageName::GetShortName(PackageName);
-			UBlueprint* BP = LoadObject<UBlueprint>(nullptr, *AssetPath);
-			if (!BP)
-			{
-				++StaleFailedCount;
-				UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load asset %s for re-audit"), *PackageName);
-				continue;
-			}
 
-			// Gather data on the game thread, dispatch write to background
-			FBlueprintAuditData Data = FBlueprintAuditor::GatherBlueprintData(BP);
-			DispatchBackgroundWrite(MoveTemp(Data));
-			++StaleReAuditedCount;
+			switch (StaleEntry.AssetType)
+			{
+			case EAuditAssetType::Blueprint:
+			{
+				UBlueprint* BP = LoadObject<UBlueprint>(nullptr, *AssetPath);
+				if (!BP)
+				{
+					++StaleFailedCount;
+					UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load Blueprint %s for re-audit"), *PackageName);
+					break;
+				}
+				FBlueprintAuditData Data = FBlueprintAuditor::GatherBlueprintData(BP);
+				DispatchBackgroundWrite(MoveTemp(Data));
+				++StaleReAuditedCount;
+				break;
+			}
+			case EAuditAssetType::DataTable:
+			{
+				UDataTable* DT = LoadObject<UDataTable>(nullptr, *AssetPath);
+				if (!DT)
+				{
+					++StaleFailedCount;
+					UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load DataTable %s for re-audit"), *PackageName);
+					break;
+				}
+				FDataTableAuditData Data = FBlueprintAuditor::GatherDataTableData(DT);
+				DispatchBackgroundWrite(MoveTemp(Data));
+				++StaleReAuditedCount;
+				break;
+			}
+			case EAuditAssetType::DataAsset:
+			{
+				UDataAsset* DA = LoadObject<UDataAsset>(nullptr, *AssetPath);
+				if (!DA)
+				{
+					++StaleFailedCount;
+					UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load DataAsset %s for re-audit"), *PackageName);
+					break;
+				}
+				FDataAssetAuditData Data = FBlueprintAuditor::GatherDataAssetData(DA);
+				DispatchBackgroundWrite(MoveTemp(Data));
+				++StaleReAuditedCount;
+				break;
+			}
+			}
 
 			if (++AssetsSinceGC >= GCInterval)
 			{
@@ -330,7 +445,7 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 
 		StaleProcessIndex = BatchEnd;
 
-		if (StaleProcessIndex >= StalePackageNames.Num())
+		if (StaleProcessIndex >= StaleEntries.Num())
 		{
 			StaleCheckPhase = EStaleCheckPhase::Done;
 		}
@@ -348,7 +463,7 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 
 		// Clean up state
 		StaleCheckEntries.Empty();
-		StalePackageNames.Empty();
+		StaleEntries.Empty();
 		StaleCheckPhase = EStaleCheckPhase::Idle;
 		StaleCheckTickerHandle.Reset();
 		return false; // unregister ticker
@@ -387,6 +502,56 @@ void UBlueprintAuditSubsystem::DispatchBackgroundWrite(FBlueprintAuditData&& Dat
 	PendingFutures.Add(MoveTemp(Future));
 }
 
+void UBlueprintAuditSubsystem::DispatchBackgroundWrite(FDataTableAuditData&& Data)
+{
+	const FString PackageName = Data.PackageName;
+	const FString OutputPath = Data.OutputPath;
+
+	{
+		FScopeLock Lock(&InFlightLock);
+		InFlightPackages.Add(PackageName);
+	}
+
+	CleanupCompletedFutures();
+
+	TFuture<void> Future = Async(EAsyncExecution::ThreadPool,
+		[this, MovedData = MoveTemp(Data), PackageName, OutputPath]()
+		{
+			const FString Markdown = FBlueprintAuditor::SerializeDataTableToMarkdown(MovedData);
+			FBlueprintAuditor::WriteAuditFile(Markdown, OutputPath);
+
+			FScopeLock Lock(&InFlightLock);
+			InFlightPackages.Remove(PackageName);
+		});
+
+	PendingFutures.Add(MoveTemp(Future));
+}
+
+void UBlueprintAuditSubsystem::DispatchBackgroundWrite(FDataAssetAuditData&& Data)
+{
+	const FString PackageName = Data.PackageName;
+	const FString OutputPath = Data.OutputPath;
+
+	{
+		FScopeLock Lock(&InFlightLock);
+		InFlightPackages.Add(PackageName);
+	}
+
+	CleanupCompletedFutures();
+
+	TFuture<void> Future = Async(EAsyncExecution::ThreadPool,
+		[this, MovedData = MoveTemp(Data), PackageName, OutputPath]()
+		{
+			const FString Markdown = FBlueprintAuditor::SerializeDataAssetToMarkdown(MovedData);
+			FBlueprintAuditor::WriteAuditFile(Markdown, OutputPath);
+
+			FScopeLock Lock(&InFlightLock);
+			InFlightPackages.Remove(PackageName);
+		});
+
+	PendingFutures.Add(MoveTemp(Future));
+}
+
 void UBlueprintAuditSubsystem::CleanupCompletedFutures()
 {
 	PendingFutures.RemoveAll([](const TFuture<void>& F)
@@ -395,10 +560,8 @@ void UBlueprintAuditSubsystem::CleanupCompletedFutures()
 	});
 }
 
-void UBlueprintAuditSubsystem::SweepOrphanedAuditFiles()
+void UBlueprintAuditSubsystem::SweepOrphanedAuditFilesInDir(const FString& BaseDir)
 {
-	const FString BaseDir = FBlueprintAuditor::GetAuditBaseDir();
-
 	TArray<FString> AuditFiles;
 	IFileManager::Get().FindFilesRecursive(AuditFiles, *BaseDir, TEXT("*.md"), true, false);
 
@@ -412,8 +575,6 @@ void UBlueprintAuditSubsystem::SweepOrphanedAuditFiles()
 	int32 SweptCount = 0;
 	for (const FString& AuditFile : AuditFiles)
 	{
-		// Convert absolute path back to a package name:
-		// Strip the base dir prefix and .md suffix, then prepend /Game/
 		FString RelPath = AuditFile;
 		if (!RelPath.StartsWith(BaseDir))
 		{
@@ -421,19 +582,16 @@ void UBlueprintAuditSubsystem::SweepOrphanedAuditFiles()
 		}
 		RelPath.RightChopInline(BaseDir.Len());
 
-		// Remove leading separator if present
 		if (RelPath.StartsWith(TEXT("/")) || RelPath.StartsWith(TEXT("\\")))
 		{
 			RelPath.RightChopInline(1);
 		}
 
-		// Remove .md suffix
 		if (RelPath.EndsWith(TEXT(".md")))
 		{
 			RelPath.LeftChopInline(3);
 		}
 
-		// Normalize separators for the package path
 		RelPath.ReplaceInline(TEXT("\\"), TEXT("/"));
 
 		const FString PackageName = TEXT("/Game/") + RelPath;
@@ -449,6 +607,13 @@ void UBlueprintAuditSubsystem::SweepOrphanedAuditFiles()
 
 	if (SweptCount > 0)
 	{
-		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Swept %d orphaned audit file(s)"), SweptCount);
+		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Swept %d orphaned audit file(s) from %s"), SweptCount, *BaseDir);
 	}
+}
+
+void UBlueprintAuditSubsystem::SweepOrphanedAuditFiles()
+{
+	SweepOrphanedAuditFilesInDir(FBlueprintAuditor::GetAuditBaseDir(TEXT("Blueprints")));
+	SweepOrphanedAuditFilesInDir(FBlueprintAuditor::GetAuditBaseDir(TEXT("DataTables")));
+	SweepOrphanedAuditFilesInDir(FBlueprintAuditor::GetAuditBaseDir(TEXT("DataAssets")));
 }
