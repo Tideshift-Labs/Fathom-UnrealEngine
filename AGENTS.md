@@ -10,7 +10,7 @@
 
 ## Build Context
 
-This is an **Unreal Engine editor plugin**, not a standalone project. It must be symlinked or copied into a UE project's `Plugins/` directory to build. It cannot be compiled independently because it depends on the UE build system (`UnrealBuildTool`).
+This is an **Unreal Engine editor plugin**, not a standalone project. It must be symlinked or copied into a UE project's `Plugins/` directory or the engine's `Engine/Plugins/Marketplace/` directory to build. It cannot be compiled independently because it depends on the UE build system (`UnrealBuildTool`).
 
 Module type is **Editor-only** (`Type: Editor`) and does not ship in packaged/cooked builds.
 

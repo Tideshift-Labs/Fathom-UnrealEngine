@@ -4,7 +4,7 @@ The Unreal Engine companion plugin for [Fathom](https://github.com/Tideshift-Lab
 
 Unreal Engine keeps much of its project data in binary formats (`.uasset`) that external tools cannot read. This plugin runs inside the UE editor to extract that data and make it available to Fathom, which in turn exposes it to agents via its MCP server and HTTP API.
 
-**You do not need to install this plugin manually.** The Fathom Rider plugin bundles it and auto-installs it into your project's `Plugins/` directory.
+**You do not need to install this plugin manually.** The Fathom Rider plugin bundles it and prompts you to install it. You can choose to install to the **Engine** (`Engine/Plugins/Marketplace/`, recommended) or the **Game** project (`Plugins/` directory).
 
 ## What it provides
 
