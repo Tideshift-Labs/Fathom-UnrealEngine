@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
 	"Version": 1,
-	"VersionName": "0.3.0",
+	"VersionName": "0.4.0",
 	"FriendlyName": "Fathom UE Link",
 	"Description": "Exports Blueprint asset summaries to JSON for external analysis, diffing, and LLM integration.",
 	"Category": "Editor",
