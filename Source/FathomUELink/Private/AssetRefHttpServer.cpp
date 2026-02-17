@@ -326,22 +326,6 @@ bool FAssetRefHttpServer::HandleSearch(const FHttpServerRequest& Request, const 
 		Query = Request.QueryParams[TEXT("q")];
 	}
 
-	if (Query.IsEmpty())
-	{
-		TSharedRef<FJsonObject> ErrorJson = MakeShared<FJsonObject>();
-		ErrorJson->SetStringField(TEXT("error"), TEXT("Missing required 'q' query parameter"));
-		ErrorJson->SetStringField(TEXT("usage"), TEXT("/asset-refs/search?q=term&class=WidgetBlueprint&limit=50"));
-
-		FString Body;
-		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
-		FJsonSerializer::Serialize(ErrorJson, Writer);
-
-		auto Response = FHttpServerResponse::Create(Body, TEXT("application/json"));
-		Response->Code = EHttpServerResponseCodes::BadRequest;
-		OnComplete(MoveTemp(Response));
-		return true;
-	}
-
 	FString ClassFilter;
 	if (Request.QueryParams.Contains(TEXT("class")))
 	{
@@ -352,6 +336,23 @@ bool FAssetRefHttpServer::HandleSearch(const FHttpServerRequest& Request, const 
 	if (Request.QueryParams.Contains(TEXT("pathPrefix")))
 	{
 		PathPrefix = Request.QueryParams[TEXT("pathPrefix")];
+	}
+
+	// Require at least one of: query, class filter, or path prefix
+	if (Query.IsEmpty() && ClassFilter.IsEmpty() && PathPrefix.IsEmpty())
+	{
+		TSharedRef<FJsonObject> ErrorJson = MakeShared<FJsonObject>();
+		ErrorJson->SetStringField(TEXT("error"), TEXT("Provide a 'q' search term and/or filters ('class', 'pathPrefix')"));
+		ErrorJson->SetStringField(TEXT("usage"), TEXT("/asset-refs/search?q=term or /asset-refs/search?class=WidgetBlueprint&pathPrefix=/Game/UI"));
+
+		FString Body;
+		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
+		FJsonSerializer::Serialize(ErrorJson, Writer);
+
+		auto Response = FHttpServerResponse::Create(Body, TEXT("application/json"));
+		Response->Code = EHttpServerResponseCodes::BadRequest;
+		OnComplete(MoveTemp(Response));
+		return true;
 	}
 
 	int32 Limit = 50;
@@ -451,7 +452,12 @@ bool FAssetRefHttpServer::HandleSearch(const FHttpServerRequest& Request, const 
 			MinScore = FMath::Min(MinScore, TokenScore);
 		}
 
-		if (bAllMatched && Tokens.Num() > 0)
+		if (Tokens.Num() == 0)
+		{
+			// Browse mode: no search query, accept all assets that pass the filter
+			ScoredResults.Add({ Asset, 0 });
+		}
+		else if (bAllMatched)
 		{
 			ScoredResults.Add({ Asset, MinScore });
 		}
