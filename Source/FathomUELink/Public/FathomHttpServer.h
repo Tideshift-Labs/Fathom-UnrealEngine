@@ -6,15 +6,15 @@
 class IHttpRouter;
 
 /**
- * Lightweight HTTP server exposing IAssetRegistry dependency/referencer queries.
- * Binds to a dynamic port (19877-19887) and writes a marker file so the Rider
- * plugin can discover it.
+ * Fathom UE HTTP server. Exposes endpoints for asset queries, live coding,
+ * and other editor functionality over HTTP (ports 19900-19910).
+ * Writes a marker file so the Rider plugin can discover and proxy requests.
  */
-class FATHOMUELINK_API FAssetRefHttpServer
+class FATHOMUELINK_API FFathomHttpServer
 {
 public:
-	FAssetRefHttpServer();
-	~FAssetRefHttpServer();
+	FFathomHttpServer();
+	~FFathomHttpServer();
 
 	/** Bind to a port, register routes, write marker file. */
 	bool Start();
@@ -38,7 +38,7 @@ private:
 	/** Return the full path to the marker file. */
 	static FString GetMarkerFilePath();
 
-	// Route handlers
+	// -- Asset reference handlers --
 	bool HandleHealth(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
 	bool HandleDependencies(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
 	bool HandleReferencers(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
@@ -47,6 +47,10 @@ private:
 
 	/** Shared logic for dependencies/referencers. bGetDependencies=true for deps, false for referencers. */
 	bool HandleAssetQuery(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete, bool bGetDependencies);
+
+	// -- Live Coding handlers --
+	bool HandleLiveCodingStatus(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
+	bool HandleLiveCodingCompile(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
 
 	int32 BoundPort = 0;
 	TSharedPtr<IHttpRouter> HttpRouter;

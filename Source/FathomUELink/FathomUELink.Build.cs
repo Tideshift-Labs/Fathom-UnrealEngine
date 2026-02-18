@@ -23,5 +23,10 @@ public class FathomUELink : ModuleRules
 			"UMG",
 			"UMGEditor",
 		});
+
+		if (Target.Platform == UnrealTargetPlatform.Win64)
+		{
+			PrivateDependencyModuleNames.Add("LiveCoding");
+		}
 	}
 }

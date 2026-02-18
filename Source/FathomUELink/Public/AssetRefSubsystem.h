@@ -1,12 +1,12 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "AssetRefHttpServer.h"
+#include "FathomHttpServer.h"
 #include "EditorSubsystem.h"
 #include "AssetRefSubsystem.generated.h"
 
 /**
- * Editor subsystem that owns the asset reference HTTP server.
+ * Editor subsystem that owns the Fathom HTTP server.
  * Starts the server on editor launch and stops it on shutdown.
  */
 UCLASS()
@@ -19,5 +19,5 @@ public:
 	virtual void Deinitialize() override;
 
 private:
-	TUniquePtr<FAssetRefHttpServer> HttpServer;
+	TUniquePtr<FFathomHttpServer> HttpServer;
 };

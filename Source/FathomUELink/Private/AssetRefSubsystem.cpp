@@ -1,16 +1,16 @@
 #include "AssetRefSubsystem.h"
 
-#include "AssetRefHttpServer.h"
+#include "FathomHttpServer.h"
 #include "BlueprintAuditor.h"
 
 void UAssetRefSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
 
-	HttpServer = MakeUnique<FAssetRefHttpServer>();
+	HttpServer = MakeUnique<FFathomHttpServer>();
 	if (!HttpServer->Start())
 	{
-		UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Asset ref HTTP server failed to start"));
+		UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: HTTP server failed to start"));
 		HttpServer.Reset();
 	}
 }

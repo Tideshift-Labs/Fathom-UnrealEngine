@@ -1,22 +1,15 @@
-#include "AssetRefHttpServer.h"
+#include "FathomHttpServer.h"
 
 #include "BlueprintAuditor.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
-#include "HttpServerModule.h"
-#include "IHttpRouter.h"
 #include "HttpServerRequest.h"
 #include "HttpResultCallback.h"
 #include "HttpServerResponse.h"
-#include "Misc/DateTime.h"
-#include "Misc/FileHelper.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
-
-static constexpr int32 PortRangeStart = 19900;
-static constexpr int32 PortRangeEnd = 19910;
 
 static FString GetDependencyTypeString(UE::AssetRegistry::EDependencyProperty Properties)
 {
@@ -50,173 +43,17 @@ static FString GetDependencyCategoryString(UE::AssetRegistry::EDependencyCategor
 	}
 }
 
-FAssetRefHttpServer::FAssetRefHttpServer()
-{
-}
-
-FAssetRefHttpServer::~FAssetRefHttpServer()
-{
-	Stop();
-}
-
-bool FAssetRefHttpServer::Start()
-{
-	for (int32 Port = PortRangeStart; Port <= PortRangeEnd; ++Port)
-	{
-		if (TryBind(Port))
-		{
-			BoundPort = Port;
-			WriteMarkerFile();
-			UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Asset ref HTTP server listening on port %d"), BoundPort);
-			return true;
-		}
-	}
-
-	UE_LOG(LogFathomUELink, Error, TEXT("Fathom: Failed to bind asset ref HTTP server on ports %d-%d"), PortRangeStart, PortRangeEnd);
-	return false;
-}
-
-void FAssetRefHttpServer::Stop()
-{
-	if (HttpRouter.IsValid())
-	{
-		for (const FHttpRouteHandle& Handle : RouteHandles)
-		{
-			HttpRouter->UnbindRoute(Handle);
-		}
-		RouteHandles.Empty();
-	}
-
-	if (BoundPort != 0)
-	{
-		DeleteMarkerFile();
-		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Asset ref HTTP server stopped (was on port %d)"), BoundPort);
-		BoundPort = 0;
-	}
-
-	HttpRouter.Reset();
-}
-
-bool FAssetRefHttpServer::TryBind(int32 Port)
-{
-	FHttpServerModule& HttpServerModule = FHttpServerModule::Get();
-	TSharedPtr<IHttpRouter> Router = HttpServerModule.GetHttpRouter(Port);
-	if (!Router.IsValid())
-	{
-		return false;
-	}
-
-	TArray<FHttpRouteHandle> Handles;
-
-	// GET /asset-refs/health
-	Handles.Add(Router->BindRoute(
-		FHttpPath(TEXT("/asset-refs/health")),
-		EHttpServerRequestVerbs::VERB_GET,
-		FHttpRequestHandler::CreateRaw(this, &FAssetRefHttpServer::HandleHealth)));
-
-	// GET /asset-refs/dependencies
-	Handles.Add(Router->BindRoute(
-		FHttpPath(TEXT("/asset-refs/dependencies")),
-		EHttpServerRequestVerbs::VERB_GET,
-		FHttpRequestHandler::CreateRaw(this, &FAssetRefHttpServer::HandleDependencies)));
-
-	// GET /asset-refs/referencers
-	Handles.Add(Router->BindRoute(
-		FHttpPath(TEXT("/asset-refs/referencers")),
-		EHttpServerRequestVerbs::VERB_GET,
-		FHttpRequestHandler::CreateRaw(this, &FAssetRefHttpServer::HandleReferencers)));
-
-	// GET /asset-refs/search
-	Handles.Add(Router->BindRoute(
-		FHttpPath(TEXT("/asset-refs/search")),
-		EHttpServerRequestVerbs::VERB_GET,
-		FHttpRequestHandler::CreateRaw(this, &FAssetRefHttpServer::HandleSearch)));
-
-	// GET /asset-refs/show
-	Handles.Add(Router->BindRoute(
-		FHttpPath(TEXT("/asset-refs/show")),
-		EHttpServerRequestVerbs::VERB_GET,
-		FHttpRequestHandler::CreateRaw(this, &FAssetRefHttpServer::HandleShow)));
-
-	// Check all handles are valid
-	for (const FHttpRouteHandle& Handle : Handles)
-	{
-		if (!Handle.IsValid())
-		{
-			// Unbind any that succeeded and bail
-			for (const FHttpRouteHandle& H : Handles)
-			{
-				if (H.IsValid())
-				{
-					Router->UnbindRoute(H);
-				}
-			}
-			return false;
-		}
-	}
-
-	HttpServerModule.StartAllListeners();
-
-	HttpRouter = Router;
-	RouteHandles = MoveTemp(Handles);
-	return true;
-}
-
-void FAssetRefHttpServer::WriteMarkerFile() const
-{
-	const FString MarkerPath = GetMarkerFilePath();
-	const FString MarkerDir = FPaths::GetPath(MarkerPath);
-	IFileManager::Get().MakeDirectory(*MarkerDir, true);
-
-	const FString Json = FString::Printf(
-		TEXT("{\n  \"port\": %d,\n  \"pid\": %d,\n  \"started\": \"%s\"\n}"),
-		BoundPort,
-		FPlatformProcess::GetCurrentProcessId(),
-		*FDateTime::Now().ToIso8601());
-
-	FFileHelper::SaveStringToFile(Json, *MarkerPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
-}
-
-void FAssetRefHttpServer::DeleteMarkerFile() const
-{
-	const FString MarkerPath = GetMarkerFilePath();
-	IFileManager::Get().Delete(*MarkerPath, false, false, true);
-}
-
-FString FAssetRefHttpServer::GetMarkerFilePath()
-{
-	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Fathom"), TEXT(".fathom-ue-server.json"));
-}
-
-// -- Route handlers --
-
-bool FAssetRefHttpServer::HandleHealth(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
-{
-	TSharedRef<FJsonObject> ResponseJson = MakeShared<FJsonObject>();
-	ResponseJson->SetStringField(TEXT("status"), TEXT("ok"));
-	ResponseJson->SetNumberField(TEXT("port"), BoundPort);
-	ResponseJson->SetNumberField(TEXT("pid"), FPlatformProcess::GetCurrentProcessId());
-
-	FString Body;
-	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
-	FJsonSerializer::Serialize(ResponseJson, Writer);
-
-	auto Response = FHttpServerResponse::Create(Body, TEXT("application/json"));
-	OnComplete(MoveTemp(Response));
-	return true;
-}
-
-bool FAssetRefHttpServer::HandleDependencies(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+bool FFathomHttpServer::HandleDependencies(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
 {
 	return HandleAssetQuery(Request, OnComplete, true);
 }
 
-bool FAssetRefHttpServer::HandleReferencers(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+bool FFathomHttpServer::HandleReferencers(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
 {
 	return HandleAssetQuery(Request, OnComplete, false);
 }
 
-bool FAssetRefHttpServer::HandleAssetQuery(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete, bool bGetDependencies)
+bool FFathomHttpServer::HandleAssetQuery(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete, bool bGetDependencies)
 {
 	// Extract ?asset= query parameter
 	FString AssetPath;
@@ -317,7 +154,7 @@ bool FAssetRefHttpServer::HandleAssetQuery(const FHttpServerRequest& Request, co
 	return true;
 }
 
-bool FAssetRefHttpServer::HandleSearch(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+bool FFathomHttpServer::HandleSearch(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
 {
 	// Parse query parameters
 	FString Query;
@@ -511,7 +348,7 @@ bool FAssetRefHttpServer::HandleSearch(const FHttpServerRequest& Request, const 
 	return true;
 }
 
-bool FAssetRefHttpServer::HandleShow(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+bool FFathomHttpServer::HandleShow(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
 {
 	FString PackagePath;
 	if (Request.QueryParams.Contains(TEXT("package")))
@@ -604,4 +441,3 @@ bool FAssetRefHttpServer::HandleShow(const FHttpServerRequest& Request, const FH
 	OnComplete(MoveTemp(Response));
 	return true;
 }
-
