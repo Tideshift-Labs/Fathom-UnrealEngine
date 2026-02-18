@@ -1,5 +1,6 @@
 #include "BlueprintAuditor.h"
 
+#include "FathomUELinkModule.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "Engine/Blueprint.h"
@@ -32,8 +33,6 @@
 #include "Components/NamedSlotInterface.h"
 #include "Components/Widget.h"
 #include "Components/PanelWidget.h"
-
-DEFINE_LOG_CATEGORY(LogFathomUELink);
 
 // ============================================================================
 // Internal helpers

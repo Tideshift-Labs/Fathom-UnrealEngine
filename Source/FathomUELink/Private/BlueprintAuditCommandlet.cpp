@@ -1,6 +1,7 @@
 #include "BlueprintAuditCommandlet.h"
 
 #include "BlueprintAuditor.h"
+#include "FathomUELinkModule.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/Blueprint.h"
 #include "Engine/DataAsset.h"

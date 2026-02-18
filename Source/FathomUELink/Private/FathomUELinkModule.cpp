@@ -1,5 +1,6 @@
 #include "FathomUELinkModule.h"
-#include "BlueprintAuditor.h"
+
+DEFINE_LOG_CATEGORY(LogFathomUELink);
 
 #define LOCTEXT_NAMESPACE "FFathomUELinkModule"
 

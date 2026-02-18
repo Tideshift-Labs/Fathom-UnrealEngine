@@ -1,6 +1,7 @@
 #include "BlueprintAuditSubsystem.h"
 
 #include "BlueprintAuditor.h"
+#include "FathomUELinkModule.h"
 #include "Async/Async.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/Blueprint.h"

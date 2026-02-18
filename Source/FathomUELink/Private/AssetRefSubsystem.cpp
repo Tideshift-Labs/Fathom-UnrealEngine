@@ -1,7 +1,7 @@
 #include "AssetRefSubsystem.h"
 
 #include "FathomHttpServer.h"
-#include "BlueprintAuditor.h"
+#include "FathomUELinkModule.h"
 
 void UAssetRefSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {

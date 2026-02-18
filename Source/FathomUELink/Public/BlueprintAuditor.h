@@ -10,8 +10,6 @@ class UUserDefinedStruct;
 struct FEdGraphPinType;
 struct FTopLevelAssetPath;
 
-DECLARE_LOG_CATEGORY_EXTERN(LogFathomUELink, Log, All);
-
 // --- POD audit data structs (no UObject pointers, safe to move across threads) ---
 
 struct FVariableAuditData

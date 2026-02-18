@@ -1,6 +1,7 @@
 #include "FathomHttpServer.h"
 
 #include "BlueprintAuditor.h"
+#include "FathomUELinkModule.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "Dom/JsonObject.h"

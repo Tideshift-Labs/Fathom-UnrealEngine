@@ -1,5 +1,6 @@
 #include "FathomHttpServer.h"
 
+#include "FathomUELinkModule.h"
 #include "HttpServerModule.h"
 #include "IHttpRouter.h"
 #include "HttpServerRequest.h"

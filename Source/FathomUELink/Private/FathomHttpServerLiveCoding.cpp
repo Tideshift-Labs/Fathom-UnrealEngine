@@ -1,5 +1,6 @@
 #include "FathomHttpServer.h"
 
+#include "FathomUELinkModule.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "HttpServerRequest.h"
@@ -10,7 +11,6 @@
 
 #if PLATFORM_WINDOWS
 #include "ILiveCodingModule.h"
-#include "Async/Async.h"
 #endif
 
 // ---------------------------------------------------------------------------
@@ -45,27 +45,6 @@ private:
 	FCriticalSection CriticalSection;
 	TArray<FString> CapturedLines;
 };
-
-// ---------------------------------------------------------------------------
-// Compile state shared between the background thread and HTTP handlers.
-// Protected by GCompileStateLock. Handlers run on the game thread (via
-// FHttpServerModule::Tick), so the lock is only contended briefly when
-// the background compile thread writes its result.
-// ---------------------------------------------------------------------------
-
-static FCriticalSection GCompileStateLock;
-
-// In-flight tracking
-static bool GCompileInFlight = false;
-static TUniquePtr<FLiveCodingLogCapture> GActiveLogCapture;
-static double GCompileStartTime = 0.0;
-
-// Last completed result (persists until the next compile starts)
-static bool GHasLastCompileResult = false;
-static FString GLastCompileResult;
-static FString GLastCompileResultText;
-static TArray<FString> GLastCompileLogs;
-static int32 GLastCompileDurationMs = 0;
 
 static void MapCompileResult(ELiveCodingCompileResult Result, FString& OutResult, FString& OutResultText)
 {
@@ -110,29 +89,6 @@ bool FFathomHttpServer::HandleLiveCodingStatus(const FHttpServerRequest& Request
 	ResponseJson->SetBoolField(TEXT("isEnabledForSession"), LiveCoding != nullptr && LiveCoding->IsEnabledForSession());
 	ResponseJson->SetBoolField(TEXT("isCompiling"), LiveCoding != nullptr && LiveCoding->IsCompiling());
 
-	// Include last compile result if available
-	{
-		FScopeLock Lock(&GCompileStateLock);
-		ResponseJson->SetBoolField(TEXT("compileInFlight"), GCompileInFlight);
-
-		if (GHasLastCompileResult)
-		{
-			TSharedRef<FJsonObject> LastCompile = MakeShared<FJsonObject>();
-			LastCompile->SetStringField(TEXT("result"), GLastCompileResult);
-			LastCompile->SetStringField(TEXT("resultText"), GLastCompileResultText);
-
-			TArray<TSharedPtr<FJsonValue>> LogArray;
-			for (const FString& Line : GLastCompileLogs)
-			{
-				LogArray.Add(MakeShared<FJsonValueString>(Line));
-			}
-			LastCompile->SetArrayField(TEXT("logs"), LogArray);
-			LastCompile->SetNumberField(TEXT("durationMs"), GLastCompileDurationMs);
-
-			ResponseJson->SetObjectField(TEXT("lastCompile"), LastCompile);
-		}
-	}
-
 	FString Body;
 	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
 	FJsonSerializer::Serialize(ResponseJson, Writer);
@@ -157,6 +113,11 @@ bool FFathomHttpServer::HandleLiveCodingStatus(const FHttpServerRequest& Request
 
 // ---------------------------------------------------------------------------
 // GET /live-coding/compile
+//
+// Runs Compile(WaitForCompletion) synchronously on the game thread. This is
+// the same behavior as pressing Ctrl+Alt+F11 in the editor: the editor
+// freezes while LiveCodingConsole.exe compiles, then resumes when done.
+// The HTTP response blocks for the duration of the compile (typically 2-30s).
 // ---------------------------------------------------------------------------
 
 bool FFathomHttpServer::HandleLiveCodingCompile(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
@@ -180,66 +141,57 @@ bool FFathomHttpServer::HandleLiveCodingCompile(const FHttpServerRequest& Reques
 		return true;
 	}
 
+	if (LiveCoding->IsCompiling())
 	{
-		FScopeLock Lock(&GCompileStateLock);
+		TSharedRef<FJsonObject> ErrorJson = MakeShared<FJsonObject>();
+		ErrorJson->SetStringField(TEXT("result"), TEXT("AlreadyCompiling"));
+		ErrorJson->SetStringField(TEXT("resultText"), TEXT("A Live Coding compile is already in progress."));
 
-		if (GCompileInFlight)
-		{
-			TSharedRef<FJsonObject> ErrorJson = MakeShared<FJsonObject>();
-			ErrorJson->SetStringField(TEXT("result"), TEXT("AlreadyCompiling"));
-			ErrorJson->SetStringField(TEXT("resultText"), TEXT("A Live Coding compile is already in progress."));
+		FString Body;
+		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
+		FJsonSerializer::Serialize(ErrorJson, Writer);
 
-			FString Body;
-			TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
-			FJsonSerializer::Serialize(ErrorJson, Writer);
-
-			auto Response = FHttpServerResponse::Create(Body, TEXT("application/json"));
-			Response->Code = EHttpServerResponseCodes::BadRequest;
-			OnComplete(MoveTemp(Response));
-			return true;
-		}
-
-		// Clear previous result and start new compile
-		GHasLastCompileResult = false;
-		GCompileInFlight = true;
-		GCompileStartTime = FPlatformTime::Seconds();
-		GActiveLogCapture = MakeUnique<FLiveCodingLogCapture>();
-		GLog->AddOutputDevice(GActiveLogCapture.Get());
+		auto Response = FHttpServerResponse::Create(Body, TEXT("application/json"));
+		Response->Code = EHttpServerResponseCodes::BadRequest;
+		OnComplete(MoveTemp(Response));
+		return true;
 	}
 
-	// Dispatch compile to a background thread. Compile(WaitForCompletion)
-	// communicates with LiveCodingConsole.exe via IPC and blocks until done.
-	// This must NOT run on the game thread (where HTTP handlers execute).
-	Async(EAsyncExecution::ThreadPool, [LiveCoding]()
-	{
-		ELiveCodingCompileResult Result = ELiveCodingCompileResult::Failure;
-		LiveCoding->Compile(ELiveCodingCompileFlags::WaitForCompletion, &Result);
+	// Set up log capture before compile
+	FLiveCodingLogCapture LogCapture;
+	GLog->AddOutputDevice(&LogCapture);
 
-		FScopeLock Lock(&GCompileStateLock);
+	const double StartTime = FPlatformTime::Seconds();
 
-		const double Duration = FPlatformTime::Seconds() - GCompileStartTime;
+	// Compile synchronously on the game thread. This blocks the editor
+	// (same as the Ctrl+Alt+F11 hotkey) while LiveCodingConsole.exe runs.
+	ELiveCodingCompileResult Result = ELiveCodingCompileResult::Failure;
+	LiveCoding->Compile(ELiveCodingCompileFlags::WaitForCompletion, &Result);
 
-		// Unregister log capture and collect lines
-		if (GActiveLogCapture.IsValid())
-		{
-			GLog->RemoveOutputDevice(GActiveLogCapture.Get());
-			GLastCompileLogs = GActiveLogCapture->GetCapturedLines();
-			GActiveLogCapture.Reset();
-		}
+	// Unregister log capture
+	GLog->RemoveOutputDevice(&LogCapture);
 
-		MapCompileResult(Result, GLastCompileResult, GLastCompileResultText);
-		GLastCompileDurationMs = FMath::RoundToInt(Duration * 1000.0);
-		GHasLastCompileResult = true;
-		GCompileInFlight = false;
+	const int32 DurationMs = FMath::RoundToInt((FPlatformTime::Seconds() - StartTime) * 1000.0);
 
-		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Live Coding compile finished: %s (%dms)"),
-			*GLastCompileResult, GLastCompileDurationMs);
-	});
+	FString ResultStr, ResultText;
+	MapCompileResult(Result, ResultStr, ResultText);
 
-	// Return immediately
+	UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Live Coding compile finished: %s (%dms)"),
+		*ResultStr, DurationMs);
+
+	// Build response
 	TSharedRef<FJsonObject> ResponseJson = MakeShared<FJsonObject>();
-	ResponseJson->SetStringField(TEXT("result"), TEXT("CompileStarted"));
-	ResponseJson->SetStringField(TEXT("resultText"), TEXT("Live Coding compile initiated. Poll /live-coding/status for results."));
+	ResponseJson->SetStringField(TEXT("result"), ResultStr);
+	ResponseJson->SetStringField(TEXT("resultText"), ResultText);
+	ResponseJson->SetNumberField(TEXT("durationMs"), DurationMs);
+
+	TArray<FString> CapturedLines = LogCapture.GetCapturedLines();
+	TArray<TSharedPtr<FJsonValue>> LogArray;
+	for (const FString& Line : CapturedLines)
+	{
+		LogArray.Add(MakeShared<FJsonValueString>(Line));
+	}
+	ResponseJson->SetArrayField(TEXT("logs"), LogArray);
 
 	FString Body;
 	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
