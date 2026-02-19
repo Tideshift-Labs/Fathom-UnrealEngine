@@ -584,21 +584,6 @@ FGraphAuditData FBlueprintAuditor::GatherGraphData(const UEdGraph* Graph)
 				NodeData.bLatent = Func->HasMetaData(TEXT("Latent"));
 			}
 
-			// Capture hardcoded (literal) input pin values
-			for (const UEdGraphPin* Pin : CallNode->Pins)
-			{
-				if (Pin->Direction != EGPD_Input) continue;
-				if (Pin->bHidden) continue;
-				if (Pin->LinkedTo.Num() > 0) continue;
-				if (Pin->DefaultValue.IsEmpty()) continue;
-				if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
-				if (Pin->PinName == UEdGraphSchema_K2::PN_Self) continue;
-
-				FDefaultInputData InputData;
-				InputData.Name = Pin->PinName.ToString();
-				InputData.Value = Pin->DefaultValue;
-				NodeData.DefaultInputs.Add(MoveTemp(InputData));
-			}
 		}
 		else if (Cast<UK2Node_IfThenElse>(Node))
 		{
@@ -636,6 +621,38 @@ FGraphAuditData FBlueprintAuditor::GatherGraphData(const UEdGraph* Graph)
 		{
 			NodeData.Type = TEXT("Other");
 			NodeData.Name = Node->GetNodeTitle(ENodeTitleType::ListView).ToString();
+		}
+
+		// Capture default values for unconnected input pins (all node types)
+		for (const UEdGraphPin* Pin : Node->Pins)
+		{
+			if (Pin->Direction != EGPD_Input) continue;
+			if (Pin->bHidden) continue;
+			if (Pin->LinkedTo.Num() > 0) continue;
+			if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
+			if (Pin->PinName == UEdGraphSchema_K2::PN_Self) continue;
+
+			FString DisplayValue;
+			if (!Pin->DefaultValue.IsEmpty())
+			{
+				DisplayValue = Pin->DefaultValue;
+			}
+			else if (Pin->DefaultObject != nullptr)
+			{
+				DisplayValue = Pin->DefaultObject->GetName();
+			}
+			else if (!Pin->DefaultTextValue.IsEmpty())
+			{
+				DisplayValue = Pin->DefaultTextValue.ToString();
+			}
+
+			if (!DisplayValue.IsEmpty())
+			{
+				FDefaultInputData InputData;
+				InputData.Name = Pin->PinName.ToString();
+				InputData.Value = MoveTemp(DisplayValue);
+				NodeData.DefaultInputs.Add(MoveTemp(InputData));
+			}
 		}
 
 		Data.Nodes.Add(MoveTemp(NodeData));
