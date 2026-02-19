@@ -11,6 +11,9 @@
 
 #if PLATFORM_WINDOWS
 #include "ILiveCodingModule.h"
+#include "HAL/FileManager.h"
+#include "HAL/PlatformMisc.h"
+#include "Misc/FileHelper.h"
 #endif
 
 // ---------------------------------------------------------------------------
@@ -71,6 +74,76 @@ static void MapCompileResult(ELiveCodingCompileResult Result, FString& OutResult
 		OutResultText = TEXT("Unexpected compile result");
 		break;
 	}
+}
+
+/**
+ * Returns the path to the UBT log file: %LOCALAPPDATA%\UnrealBuildTool\Log.txt.
+ * Returns empty string if LOCALAPPDATA is not set.
+ */
+static FString GetUBTLogPath()
+{
+	FString LocalAppData = FPlatformMisc::GetEnvironmentVariable(TEXT("LOCALAPPDATA"));
+	if (LocalAppData.IsEmpty())
+	{
+		return FString();
+	}
+	return FPaths::Combine(LocalAppData, TEXT("UnrealBuildTool"), TEXT("Log.txt"));
+}
+
+/**
+ * Reads lines appended to LogPath after PreviousSize, capped at 64KB.
+ * Returns empty array on any error (missing file, locked file, nothing new).
+ */
+static TArray<FString> ReadUBTLogTail(const FString& LogPath, int64 PreviousSize)
+{
+	TArray<FString> Lines;
+
+	if (LogPath.IsEmpty())
+	{
+		return Lines;
+	}
+
+	const int64 CurrentSize = IFileManager::Get().FileSize(*LogPath);
+	if (CurrentSize < 0 || CurrentSize <= PreviousSize)
+	{
+		return Lines;
+	}
+
+	const int64 MaxRead = 64 * 1024;
+	int64 ReadOffset = PreviousSize;
+	int64 BytesToRead = CurrentSize - PreviousSize;
+	if (BytesToRead > MaxRead)
+	{
+		// Only read the last 64KB of the new content
+		ReadOffset = CurrentSize - MaxRead;
+		BytesToRead = MaxRead;
+	}
+
+	TUniquePtr<FArchive> Reader(IFileManager::Get().CreateFileReader(*LogPath));
+	if (!Reader)
+	{
+		return Lines;
+	}
+
+	Reader->Seek(ReadOffset);
+
+	TArray<uint8> Buffer;
+	Buffer.SetNumUninitialized(BytesToRead);
+	Reader->Serialize(Buffer.GetData(), BytesToRead);
+	Reader->Close();
+
+	FString Content;
+	FFileHelper::BufferToString(Content, Buffer.GetData(), Buffer.Num());
+
+	Content.ParseIntoArrayLines(Lines, /* CullEmpty */ false);
+
+	// Remove empty trailing line from final newline
+	if (Lines.Num() > 0 && Lines.Last().IsEmpty())
+	{
+		Lines.Pop();
+	}
+
+	return Lines;
 }
 
 #endif // PLATFORM_WINDOWS
@@ -161,6 +234,10 @@ bool FFathomHttpServer::HandleLiveCodingCompile(const FHttpServerRequest& Reques
 	FLiveCodingLogCapture LogCapture;
 	GLog->AddOutputDevice(&LogCapture);
 
+	// Snapshot UBT log size so we can read only new content on failure
+	const FString UBTLogPath = GetUBTLogPath();
+	const int64 UBTLogSizeBefore = UBTLogPath.IsEmpty() ? -1 : IFileManager::Get().FileSize(*UBTLogPath);
+
 	const double StartTime = FPlatformTime::Seconds();
 
 	// Compile synchronously on the game thread. This blocks the editor
@@ -192,6 +269,21 @@ bool FFathomHttpServer::HandleLiveCodingCompile(const FHttpServerRequest& Reques
 		LogArray.Add(MakeShared<FJsonValueString>(Line));
 	}
 	ResponseJson->SetArrayField(TEXT("logs"), LogArray);
+
+	// On failure, read compiler/linker errors from the UBT log
+	if (Result == ELiveCodingCompileResult::Failure)
+	{
+		TArray<FString> UBTLines = ReadUBTLogTail(UBTLogPath, UBTLogSizeBefore);
+		if (UBTLines.Num() > 0)
+		{
+			TArray<TSharedPtr<FJsonValue>> ErrorArray;
+			for (const FString& Line : UBTLines)
+			{
+				ErrorArray.Add(MakeShared<FJsonValueString>(Line));
+			}
+			ResponseJson->SetArrayField(TEXT("buildErrors"), ErrorArray);
+		}
+	}
 
 	FString Body;
 	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
