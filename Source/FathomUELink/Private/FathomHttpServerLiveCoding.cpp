@@ -94,16 +94,16 @@ static FString GetUBTLogPath()
  * Reads lines appended to LogPath after PreviousSize, capped at 64KB.
  * Returns empty array on any error (missing file, locked file, nothing new).
  */
-static TArray<FString> ReadUBTLogTail(const FString& LogPath, int64 PreviousSize)
+static TArray<FString> ReadUBTLogTail(const FString& InLogPath, int64 PreviousSize)
 {
 	TArray<FString> Lines;
 
-	if (LogPath.IsEmpty())
+	if (InLogPath.IsEmpty())
 	{
 		return Lines;
 	}
 
-	const int64 CurrentSize = IFileManager::Get().FileSize(*LogPath);
+	const int64 CurrentSize = IFileManager::Get().FileSize(*InLogPath);
 	if (CurrentSize < 0 || CurrentSize <= PreviousSize)
 	{
 		return Lines;
@@ -119,7 +119,7 @@ static TArray<FString> ReadUBTLogTail(const FString& LogPath, int64 PreviousSize
 		BytesToRead = MaxRead;
 	}
 
-	TUniquePtr<FArchive> Reader(IFileManager::Get().CreateFileReader(*LogPath));
+	TUniquePtr<FArchive> Reader(IFileManager::Get().CreateFileReader(*InLogPath));
 	if (!Reader)
 	{
 		return Lines;
