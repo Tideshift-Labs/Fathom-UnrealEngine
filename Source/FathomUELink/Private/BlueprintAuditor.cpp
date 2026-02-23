@@ -380,10 +380,13 @@ FBlueprintAuditData FBlueprintAuditor::GatherBlueprintData(const UBlueprint* BP)
 	}
 
 	// --- Property Overrides (CDO Diff) ---
+	// Skip if the Blueprint has compile errors; the generated class may exist
+	// as a skeleton with no usable CDO, which would crash GetDefaultObject().
 	if (UClass* GeneratedClass = BP->GeneratedClass)
 	{
-		if (UClass* SuperClass = GeneratedClass->GetSuperClass())
+		if (BP->Status != BS_Error && GeneratedClass->GetSuperClass())
 		{
+			UClass* SuperClass = GeneratedClass->GetSuperClass();
 			const UObject* CDO = GeneratedClass->GetDefaultObject();
 			const UObject* SuperCDO = SuperClass->GetDefaultObject();
 
@@ -1174,33 +1177,38 @@ FDataAssetAuditData FBlueprintAuditor::GatherDataAssetData(const UDataAsset* Ass
 	Data.NativeClass = AssetClass->GetName();
 	Data.NativeClassPath = AssetClass->GetPathName();
 
-	// CDO diff: compare asset properties against the class default object
-	const UObject* CDO = AssetClass->GetDefaultObject();
+	// CDO diff: compare asset properties against the class default object.
+	// If the asset's class comes from a Blueprint with compile errors, the
+	// CDO may not exist or may be in a broken state, so guard against that.
+	const UObject* CDO = AssetClass->GetDefaultObject(/*bCreateIfNeeded=*/false);
 
-	for (TFieldIterator<FProperty> PropIt(AssetClass); PropIt; ++PropIt)
+	if (CDO)
 	{
-		const FProperty* Prop = *PropIt;
-
-		// Skip properties owned by the engine base class (UDataAsset itself)
-		if (Prop->GetOwner<UClass>() == UDataAsset::StaticClass())
+		for (TFieldIterator<FProperty> PropIt(AssetClass); PropIt; ++PropIt)
 		{
-			continue;
-		}
+			const FProperty* Prop = *PropIt;
 
-		if (Prop->HasAnyPropertyFlags(CPF_Transient))
-		{
-			continue;
-		}
+			// Skip properties owned by the engine base class (UDataAsset itself)
+			if (Prop->GetOwner<UClass>() == UDataAsset::StaticClass())
+			{
+				continue;
+			}
 
-		const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Asset);
-		const void* DefaultPtr = Prop->ContainerPtrToValuePtr<void>(CDO);
+			if (Prop->HasAnyPropertyFlags(CPF_Transient))
+			{
+				continue;
+			}
 
-		if (!Prop->Identical(ValuePtr, DefaultPtr))
-		{
-			FPropertyOverrideData Override;
-			Override.Name = Prop->GetName();
-			Prop->ExportText_InContainer(0, Override.Value, Asset, nullptr, nullptr, 0);
-			Data.Properties.Add(MoveTemp(Override));
+			const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Asset);
+			const void* DefaultPtr = Prop->ContainerPtrToValuePtr<void>(CDO);
+
+			if (!Prop->Identical(ValuePtr, DefaultPtr))
+			{
+				FPropertyOverrideData Override;
+				Override.Name = Prop->GetName();
+				Prop->ExportText_InContainer(0, Override.Value, Asset, nullptr, nullptr, 0);
+				Data.Properties.Add(MoveTemp(Override));
+			}
 		}
 	}
 
@@ -1253,10 +1261,13 @@ FUserDefinedStructAuditData FBlueprintAuditor::GatherUserDefinedStructData(const
 	Data.SourceFilePath = GetSourceFilePath(Data.PackageName);
 	Data.OutputPath = GetAuditOutputPath(Data.PackageName);
 
-	// Allocate a temp buffer to read default values from
+	// Allocate a temp buffer to read default values from.
+	// Only attempt this when the struct is fully compiled; structs with
+	// errors or pending recompilation may have no valid default instance,
+	// which causes a crash inside InitializeDefaultValue.
 	const int32 StructSize = Struct->GetStructureSize();
 	uint8* DefaultBuffer = nullptr;
-	if (StructSize > 0)
+	if (StructSize > 0 && Struct->Status == EUserDefinedStructureStatus::UDSS_UpToDate)
 	{
 		DefaultBuffer = static_cast<uint8*>(FMemory::Malloc(StructSize, Struct->GetMinAlignment()));
 		Struct->InitializeDefaultValue(DefaultBuffer);
