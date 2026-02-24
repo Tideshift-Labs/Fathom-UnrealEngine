@@ -69,6 +69,7 @@ struct FNodeAuditData
 	bool bPure = false;
 	bool bLatent = false;
 	TArray<FDefaultInputData> DefaultInputs;
+	FString CompilerMessage;  // e.g. "Error: Accessed None trying to read property Health"
 };
 
 struct FExecEdge
@@ -176,6 +177,7 @@ struct FBlueprintAuditData
 	FString PackageName;
 	FString ParentClass;
 	FString BlueprintType;
+	FString CompileStatus;  // e.g. "Error", "UpToDate", "Dirty"
 	FString SourceFilePath;
 	FString OutputPath;
 
@@ -199,7 +201,7 @@ struct FBlueprintAuditData
 struct FATHOMUELINK_API FBlueprintAuditor
 {
 	/** Bump when the audit format changes to invalidate all cached audit files. */
-	static constexpr int32 AuditSchemaVersion = 7;
+	static constexpr int32 AuditSchemaVersion = 8;
 
 	// --- Game-thread gather (reads UObject pointers, populates POD structs) ---
 

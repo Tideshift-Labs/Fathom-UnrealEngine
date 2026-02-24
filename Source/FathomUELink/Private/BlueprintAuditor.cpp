@@ -356,6 +356,7 @@ FBlueprintAuditData FBlueprintAuditor::GatherBlueprintData(const UBlueprint* BP)
 	Data.PackageName = BP->GetOutermost()->GetName();
 	Data.ParentClass = BP->ParentClass ? BP->ParentClass->GetPathName() : TEXT("None");
 	Data.BlueprintType = StaticEnum<EBlueprintType>()->GetNameStringByValue(static_cast<int64>(BP->BlueprintType));
+	Data.CompileStatus = StaticEnum<EBlueprintStatus>()->GetNameStringByValue(static_cast<int64>(BP->Status));
 
 	// Store the source file path so the hash can be computed on a background thread
 	Data.SourceFilePath = GetSourceFilePath(Data.PackageName);
@@ -658,6 +659,27 @@ FGraphAuditData FBlueprintAuditor::GatherGraphData(const UEdGraph* Graph)
 			}
 		}
 
+		// Capture compiler message if the node has one
+		if (Node->bHasCompilerMessage && !Node->ErrorMsg.IsEmpty())
+		{
+			FString Severity;
+			switch (Node->ErrorType)
+			{
+			case EMessageSeverity::Error:          // 0
+			case EMessageSeverity::CriticalError:  // 1
+				Severity = TEXT("Error");
+				break;
+			case EMessageSeverity::Warning:         // 2
+			case EMessageSeverity::PerformanceWarning: // 3
+				Severity = TEXT("Warning");
+				break;
+			default:
+				Severity = TEXT("Info");
+				break;
+			}
+			NodeData.CompilerMessage = FString::Printf(TEXT("%s: %s"), *Severity, *Node->ErrorMsg);
+		}
+
 		Data.Nodes.Add(MoveTemp(NodeData));
 	}
 
@@ -768,6 +790,10 @@ FString FBlueprintAuditor::SerializeToMarkdown(const FBlueprintAuditData& Data)
 	Result += FString::Printf(TEXT("Path: %s\n"), *Data.Path);
 	Result += FString::Printf(TEXT("Parent: %s\n"), *Data.ParentClass);
 	Result += FString::Printf(TEXT("Type: %s\n"), *Data.BlueprintType);
+	if (!Data.CompileStatus.IsEmpty())
+	{
+		Result += FString::Printf(TEXT("Status: %s\n"), *Data.CompileStatus);
+	}
 
 	if (!Data.SourceFilePath.IsEmpty())
 	{
@@ -971,6 +997,11 @@ FString FBlueprintAuditor::SerializeGraphToMarkdown(const FGraphAuditData& Data,
 					if (!Details.IsEmpty()) Details += TEXT(", ");
 					Details += FString::Printf(TEXT("%s=%s"), *Input.Name, *Input.Value);
 				}
+			}
+			if (!Node.CompilerMessage.IsEmpty())
+			{
+				if (!Details.IsEmpty()) Details += TEXT(", ");
+				Details += Node.CompilerMessage;
 			}
 			Result += FString::Printf(TEXT("| %d | %s | %s | %s |\n"),
 				Node.Id, *Node.Type, *Node.Name, *Details);
