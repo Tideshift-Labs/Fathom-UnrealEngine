@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 
 class UBlueprint;
+class UControlRigBlueprint;
 class UDataAsset;
 class UDataTable;
 class UEdGraph;
@@ -170,6 +171,61 @@ struct FUserDefinedStructAuditData
 	TArray<FStructFieldDef> Fields;
 };
 
+// --- ControlRig audit data ---
+
+struct FRigVMPinAuditData
+{
+	FString Name;
+	FString CPPType;       // "float", "FVector", "FRigElementKey"
+	FString Direction;     // "Input", "Output", "IO", "Hidden"
+	FString DefaultValue;
+};
+
+struct FRigVMNodeAuditData
+{
+	int32 Id = 0;
+	FString Type;          // "Unit", "Variable", "FunctionRef", "FunctionEntry",
+	                       // "FunctionReturn", "Collapse", "Other"
+	FString Name;
+	FString StructPath;    // for Unit nodes: e.g. "FRigUnit_SetBoneTransform"
+	FString MethodName;    // for Unit nodes: e.g. "Execute"
+	bool bIsMutable = false;
+	bool bIsPure = false;
+	bool bIsEvent = false;
+	TArray<FRigVMPinAuditData> Pins;
+};
+
+struct FRigVMEdgeAuditData
+{
+	int32 SourceNodeId = 0;
+	FString SourcePinPath;
+	int32 TargetNodeId = 0;
+	FString TargetPinPath;
+};
+
+struct FRigVMGraphAuditData
+{
+	FString Name;
+	bool bIsRootGraph = false;
+	TArray<FGraphParamData> Inputs;
+	TArray<FGraphParamData> Outputs;
+	TArray<FRigVMNodeAuditData> Nodes;
+	TArray<FRigVMEdgeAuditData> Edges;
+};
+
+struct FControlRigAuditData
+{
+	FString Name;
+	FString Path;
+	FString PackageName;
+	FString ParentClass;
+	FString SourceFilePath;
+	FString OutputPath;
+
+	TArray<FVariableAuditData> Variables;
+	TArray<FRigVMGraphAuditData> Graphs;
+};
+
 struct FBlueprintAuditData
 {
 	FString Name;
@@ -201,7 +257,7 @@ struct FBlueprintAuditData
 struct FATHOMUELINK_API FBlueprintAuditor
 {
 	/** Bump when the audit format changes to invalidate all cached audit files. */
-	static constexpr int32 AuditSchemaVersion = 8;
+	static constexpr int32 AuditSchemaVersion = 9;
 
 	// --- Game-thread gather (reads UObject pointers, populates POD structs) ---
 
@@ -248,6 +304,14 @@ struct FATHOMUELINK_API FBlueprintAuditor
 
 	/** Serialize gathered UserDefinedStruct data to Markdown. Computes SourceFileHash from SourceFilePath. Safe on any thread. */
 	static FString SerializeUserDefinedStructToMarkdown(const FUserDefinedStructAuditData& Data);
+
+	// --- ControlRig gather + serialize ---
+
+	/** Gather all audit data from a ControlRig Blueprint into a POD struct. Must be called on the game thread. */
+	static FControlRigAuditData GatherControlRigData(const UControlRigBlueprint* CRBP);
+
+	/** Serialize gathered ControlRig data to Markdown. Computes SourceFileHash from SourceFilePath. Safe on any thread. */
+	static FString SerializeControlRigToMarkdown(const FControlRigAuditData& Data);
 
 	// --- Legacy synchronous API (used by Commandlet and as a convenience wrapper) ---
 

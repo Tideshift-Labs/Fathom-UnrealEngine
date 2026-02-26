@@ -19,7 +19,10 @@ public class FathomUELink : ModuleRules
 		{
 			"AssetRegistry",
 			"BlueprintGraph",
+			"ControlRig",
+			"ControlRigDeveloper",
 			"Json",
+			"RigVMDeveloper",
 			"UMG",
 			"UMGEditor",
 		});

@@ -3,6 +3,7 @@
 #include "BlueprintAuditor.h"
 #include "FathomUELinkModule.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "ControlRigBlueprintLegacy.h"
 #include "Engine/Blueprint.h"
 #include "Engine/DataAsset.h"
 #include "Engine/DataTable.h"
@@ -107,8 +108,19 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 			continue;
 		}
 
-		const FString PerFilePath = FBlueprintAuditor::GetAuditOutputPath(BP);
-		const FString AuditMarkdown = FBlueprintAuditor::AuditBlueprint(BP);
+		FString PerFilePath;
+		FString AuditMarkdown;
+		if (const UControlRigBlueprint* CRBP = Cast<UControlRigBlueprint>(BP))
+		{
+			FControlRigAuditData Data = FBlueprintAuditor::GatherControlRigData(CRBP);
+			PerFilePath = Data.OutputPath;
+			AuditMarkdown = FBlueprintAuditor::SerializeControlRigToMarkdown(Data);
+		}
+		else
+		{
+			PerFilePath = FBlueprintAuditor::GetAuditOutputPath(BP);
+			AuditMarkdown = FBlueprintAuditor::AuditBlueprint(BP);
+		}
 		if (FBlueprintAuditor::WriteAuditFile(AuditMarkdown, PerFilePath))
 		{
 			++SuccessCount;

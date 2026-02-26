@@ -8,6 +8,7 @@
 #include "Engine/DataAsset.h"
 #include "Engine/DataTable.h"
 #include "StructUtils/UserDefinedStruct.h"
+#include "ControlRigBlueprintLegacy.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
@@ -110,7 +111,22 @@ void UBlueprintAuditSubsystem::OnPackageSaved(const FString& PackageFileName, UP
 	// Walk all objects in the saved package, looking for auditable assets
 	ForEachObjectWithPackage(Package, [this](UObject* Object)
 	{
-		if (const UBlueprint* BP = Cast<UBlueprint>(Object))
+		if (const UControlRigBlueprint* CRBP = Cast<UControlRigBlueprint>(Object))
+		{
+			FControlRigAuditData Data = FBlueprintAuditor::GatherControlRigData(CRBP);
+
+			{
+				FScopeLock Lock(&InFlightLock);
+				if (InFlightPackages.Contains(Data.PackageName))
+				{
+					return true;
+				}
+			}
+
+			UE_LOG(LogFathomUELink, Verbose, TEXT("Fathom: Dispatching async audit for saved ControlRig %s"), *Data.Name);
+			DispatchBackgroundWrite(MoveTemp(Data));
+		}
+		else if (const UBlueprint* BP = Cast<UBlueprint>(Object))
 		{
 			if (!FBlueprintAuditor::IsSupportedBlueprintClass(BP->GetClass()->GetClassPathName()))
 			{
@@ -430,8 +446,16 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 					UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load Blueprint %s for re-audit"), *PackageName);
 					break;
 				}
-				FBlueprintAuditData Data = FBlueprintAuditor::GatherBlueprintData(BP);
-				DispatchBackgroundWrite(MoveTemp(Data));
+				if (const UControlRigBlueprint* CRBP = Cast<UControlRigBlueprint>(BP))
+				{
+					FControlRigAuditData Data = FBlueprintAuditor::GatherControlRigData(CRBP);
+					DispatchBackgroundWrite(MoveTemp(Data));
+				}
+				else
+				{
+					FBlueprintAuditData Data = FBlueprintAuditor::GatherBlueprintData(BP);
+					DispatchBackgroundWrite(MoveTemp(Data));
+				}
 				++StaleReAuditedCount;
 				break;
 			}
@@ -611,6 +635,31 @@ void UBlueprintAuditSubsystem::DispatchBackgroundWrite(FUserDefinedStructAuditDa
 		[this, MovedData = MoveTemp(Data), PackageName, OutputPath]()
 		{
 			const FString Markdown = FBlueprintAuditor::SerializeUserDefinedStructToMarkdown(MovedData);
+			FBlueprintAuditor::WriteAuditFile(Markdown, OutputPath);
+
+			FScopeLock Lock(&InFlightLock);
+			InFlightPackages.Remove(PackageName);
+		});
+
+	PendingFutures.Add(MoveTemp(Future));
+}
+
+void UBlueprintAuditSubsystem::DispatchBackgroundWrite(FControlRigAuditData&& Data)
+{
+	const FString PackageName = Data.PackageName;
+	const FString OutputPath = Data.OutputPath;
+
+	{
+		FScopeLock Lock(&InFlightLock);
+		InFlightPackages.Add(PackageName);
+	}
+
+	CleanupCompletedFutures();
+
+	TFuture<void> Future = Async(EAsyncExecution::ThreadPool,
+		[this, MovedData = MoveTemp(Data), PackageName, OutputPath]()
+		{
+			const FString Markdown = FBlueprintAuditor::SerializeControlRigToMarkdown(MovedData);
 			FBlueprintAuditor::WriteAuditFile(Markdown, OutputPath);
 
 			FScopeLock Lock(&InFlightLock);
