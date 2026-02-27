@@ -63,7 +63,8 @@ struct FNodeAuditData
 	int32 Id = 0;
 	FString Type;    // "FunctionEntry", "FunctionResult", "Event", "CustomEvent",
 	                 // "CallFunction", "Branch", "Sequence", "VariableGet",
-	                 // "VariableSet", "MacroInstance", "Timeline", "Other"
+	                 // "VariableSet", "MacroInstance", "Timeline",
+	                 // "CollapsedNode", "Tunnel", "Other"
 	FString Name;
 	FString Target;  // owning class for CallFunction (empty otherwise)
 	bool bIsNative = false;
@@ -100,6 +101,9 @@ struct FGraphAuditData
 	TArray<FNodeAuditData> Nodes;
 	TArray<FExecEdge> ExecFlows;
 	TArray<FDataEdge> DataFlows;
+
+	// Collapsed sub-graphs (UK2Node_Composite bound graphs, can nest recursively)
+	TArray<FGraphAuditData> SubGraphs;
 };
 
 struct FWidgetAuditData
@@ -257,7 +261,7 @@ struct FBlueprintAuditData
 struct FATHOMUELINK_API FBlueprintAuditor
 {
 	/** Bump when the audit format changes to invalidate all cached audit files. */
-	static constexpr int32 AuditSchemaVersion = 9;
+	static constexpr int32 AuditSchemaVersion = 10;
 
 	// --- Game-thread gather (reads UObject pointers, populates POD structs) ---
 

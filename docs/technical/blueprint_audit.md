@@ -150,6 +150,7 @@ When the format changes, bump the version on both sides. All existing cached fil
 | Function graphs | Same detail as event graphs |
 | Macro graphs | Name and node count only |
 | Widget tree | Recursive hierarchy with name, class, `IsVariable` flag |
+| Collapsed sub-graphs | Recursive traversal of `UK2Node_Composite` bound graphs with full node/edge detail |
 | Interfaces | List of implemented interface names |
 
 ### Not captured

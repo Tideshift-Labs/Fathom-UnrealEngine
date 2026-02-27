@@ -11,6 +11,7 @@
 #include "Engine/SimpleConstructionScript.h"
 #include "Engine/TimelineTemplate.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_Composite.h"
 #include "K2Node_CustomEvent.h"
 #include "K2Node_Event.h"
 #include "K2Node_MacroInstance.h"
@@ -20,6 +21,7 @@
 #include "K2Node_ExecutionSequence.h"
 #include "K2Node_Knot.h"
 #include "K2Node_Timeline.h"
+#include "K2Node_Tunnel.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_FunctionResult.h"
 #include "Misc/FileHelper.h"
@@ -520,6 +522,7 @@ FGraphAuditData FBlueprintAuditor::GatherGraphData(const UEdGraph* Graph)
 
 	TMap<UEdGraphNode*, int32> NodeIdMap;
 	int32 NextId = 0;
+	TArray<FGraphAuditData> CollectedSubGraphs;
 
 	for (UEdGraphNode* Node : Graph->Nodes)
 	{
@@ -634,6 +637,22 @@ FGraphAuditData FBlueprintAuditor::GatherGraphData(const UEdGraph* Graph)
 			NodeData.Type = TEXT("Timeline");
 			NodeData.Name = Node->GetNodeTitle(ENodeTitleType::ListView).ToString();
 		}
+		// Check Composite before Tunnel (UK2Node_Composite inherits from UK2Node_Tunnel)
+		else if (const UK2Node_Composite* CompositeNode = Cast<UK2Node_Composite>(Node))
+		{
+			NodeData.Type = TEXT("CollapsedNode");
+			NodeData.Name = Node->GetNodeTitle(ENodeTitleType::ListView).ToString();
+
+			if (UEdGraph* BoundGraph = CompositeNode->BoundGraph)
+			{
+				CollectedSubGraphs.Add(GatherGraphData(BoundGraph));
+			}
+		}
+		else if (Cast<UK2Node_Tunnel>(Node))
+		{
+			NodeData.Type = TEXT("Tunnel");
+			NodeData.Name = Node->GetNodeTitle(ENodeTitleType::ListView).ToString();
+		}
 		else
 		{
 			NodeData.Type = TEXT("Other");
@@ -695,6 +714,9 @@ FGraphAuditData FBlueprintAuditor::GatherGraphData(const UEdGraph* Graph)
 
 		Data.Nodes.Add(MoveTemp(NodeData));
 	}
+
+	// Move collected collapsed sub-graphs into Data
+	Data.SubGraphs = MoveTemp(CollectedSubGraphs);
 
 	// ---- Pass 2: Build edges (walk OUTPUT pins only to avoid duplicates) ----
 
@@ -970,6 +992,10 @@ FString FBlueprintAuditor::SerializeGraphToMarkdown(const FGraphAuditData& Data,
 		}
 		Result += TEXT("\n");
 	}
+	else if (Prefix == TEXT("Collapsed"))
+	{
+		Result += FString::Printf(TEXT("### Collapsed: %s\n"), *Data.Name);
+	}
 	else
 	{
 		Result += FString::Printf(TEXT("## %s\n"), *Data.Name);
@@ -1056,6 +1082,13 @@ FString FBlueprintAuditor::SerializeGraphToMarkdown(const FGraphAuditData& Data,
 				Edge.TargetNodeId, *Edge.TargetPinName);
 		}
 		Result += TEXT("\n");
+	}
+
+	// --- Collapsed sub-graphs ---
+	for (const FGraphAuditData& Sub : Data.SubGraphs)
+	{
+		Result += TEXT("\n");
+		Result += SerializeGraphToMarkdown(Sub, TEXT("Collapsed"));
 	}
 
 	return Result;
