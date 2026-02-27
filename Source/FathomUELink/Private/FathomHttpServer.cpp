@@ -1,4 +1,5 @@
 #include "FathomHttpServer.h"
+#include "FathomHttpHelpers.h"
 
 #include "FathomUELinkModule.h"
 #include "HttpServerModule.h"
@@ -14,10 +15,6 @@
 
 static constexpr int32 PortRangeStart = 19900;
 static constexpr int32 PortRangeEnd = 19910;
-
-FFathomHttpServer::FFathomHttpServer()
-{
-}
 
 FFathomHttpServer::~FFathomHttpServer()
 {
@@ -71,6 +68,24 @@ bool FFathomHttpServer::TryBind(int32 Port)
 		return false;
 	}
 
+	// Wrap each handler so that an unexpected false return logs an error and
+	// sends a 500 response instead of leaving the request unhandled.
+	auto WrapHandler = [this](auto HandlerPtr, const TCHAR* Name)
+	{
+		return FHttpRequestHandler::CreateLambda(
+			[this, HandlerPtr, Name](const FHttpServerRequest& Req, const FHttpResultCallback& OnComplete) -> bool
+			{
+				const bool bHandled = (this->*HandlerPtr)(Req, OnComplete);
+				if (!bHandled)
+				{
+					UE_LOG(LogFathomUELink, Error, TEXT("Fathom: handler %s returned false unexpectedly"), Name);
+					FathomHttp::SendError(OnComplete, EHttpServerResponseCodes::ServerError,
+						FString::Printf(TEXT("Internal error in %s"), Name));
+				}
+				return true;
+			});
+	};
+
 	TArray<FHttpRouteHandle> Handles;
 
 	// -- Asset reference routes --
@@ -78,39 +93,39 @@ bool FFathomHttpServer::TryBind(int32 Port)
 	Handles.Add(Router->BindRoute(
 		FHttpPath(TEXT("/asset-refs/health")),
 		EHttpServerRequestVerbs::VERB_GET,
-		FHttpRequestHandler::CreateRaw(this, &FFathomHttpServer::HandleHealth)));
+		WrapHandler(&FFathomHttpServer::HandleHealth, TEXT("/asset-refs/health"))));
 
 	Handles.Add(Router->BindRoute(
 		FHttpPath(TEXT("/asset-refs/dependencies")),
 		EHttpServerRequestVerbs::VERB_GET,
-		FHttpRequestHandler::CreateRaw(this, &FFathomHttpServer::HandleDependencies)));
+		WrapHandler(&FFathomHttpServer::HandleDependencies, TEXT("/asset-refs/dependencies"))));
 
 	Handles.Add(Router->BindRoute(
 		FHttpPath(TEXT("/asset-refs/referencers")),
 		EHttpServerRequestVerbs::VERB_GET,
-		FHttpRequestHandler::CreateRaw(this, &FFathomHttpServer::HandleReferencers)));
+		WrapHandler(&FFathomHttpServer::HandleReferencers, TEXT("/asset-refs/referencers"))));
 
 	Handles.Add(Router->BindRoute(
 		FHttpPath(TEXT("/asset-refs/search")),
 		EHttpServerRequestVerbs::VERB_GET,
-		FHttpRequestHandler::CreateRaw(this, &FFathomHttpServer::HandleSearch)));
+		WrapHandler(&FFathomHttpServer::HandleSearch, TEXT("/asset-refs/search"))));
 
 	Handles.Add(Router->BindRoute(
 		FHttpPath(TEXT("/asset-refs/show")),
 		EHttpServerRequestVerbs::VERB_GET,
-		FHttpRequestHandler::CreateRaw(this, &FFathomHttpServer::HandleShow)));
+		WrapHandler(&FFathomHttpServer::HandleShow, TEXT("/asset-refs/show"))));
 
 	// -- Live Coding routes --
 
 	Handles.Add(Router->BindRoute(
 		FHttpPath(TEXT("/live-coding/status")),
 		EHttpServerRequestVerbs::VERB_GET,
-		FHttpRequestHandler::CreateRaw(this, &FFathomHttpServer::HandleLiveCodingStatus)));
+		WrapHandler(&FFathomHttpServer::HandleLiveCodingStatus, TEXT("/live-coding/status"))));
 
 	Handles.Add(Router->BindRoute(
 		FHttpPath(TEXT("/live-coding/compile")),
 		EHttpServerRequestVerbs::VERB_GET,
-		FHttpRequestHandler::CreateRaw(this, &FFathomHttpServer::HandleLiveCodingCompile)));
+		WrapHandler(&FFathomHttpServer::HandleLiveCodingCompile, TEXT("/live-coding/compile"))));
 
 	// Check all handles are valid
 	for (const FHttpRouteHandle& Handle : Handles)
@@ -129,6 +144,10 @@ bool FFathomHttpServer::TryBind(int32 Port)
 		}
 	}
 
+	// NOTE: StartAllListeners() affects all HTTP routers registered with FHttpServerModule,
+	// not just ours. If other plugins also use the HTTP module, calling this here could
+	// start their listeners prematurely. In practice this is safe because the editor's
+	// HTTP module starts all listeners on the first GetHttpRouter() call anyway.
 	HttpServerModule.StartAllListeners();
 
 	HttpRouter = Router;
@@ -171,11 +190,5 @@ bool FFathomHttpServer::HandleHealth(const FHttpServerRequest& Request, const FH
 	ResponseJson->SetNumberField(TEXT("port"), BoundPort);
 	ResponseJson->SetNumberField(TEXT("pid"), FPlatformProcess::GetCurrentProcessId());
 
-	FString Body;
-	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
-	FJsonSerializer::Serialize(ResponseJson, Writer);
-
-	auto Response = FHttpServerResponse::Create(Body, TEXT("application/json"));
-	OnComplete(MoveTemp(Response));
-	return true;
+	return FathomHttp::SendJson(OnComplete, ResponseJson);
 }

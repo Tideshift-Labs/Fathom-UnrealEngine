@@ -438,19 +438,20 @@ FGraphAuditData FBlueprintGraphAuditor::GatherGraphData(const UEdGraph* Graph)
 		if (Node->bHasCompilerMessage && !Node->ErrorMsg.IsEmpty())
 		{
 			FString Severity;
-			switch (Node->ErrorType)
+			// ErrorType is ordered most-to-least severe. Use <= so that
+			// CriticalError (removed in 5.7, value 0 in 5.5/5.6) is
+			// covered without referencing the deprecated enumerator.
+			if (Node->ErrorType <= EMessageSeverity::Error)
 			{
-			case EMessageSeverity::Error:          // 0
-			case EMessageSeverity::CriticalError:  // 1
 				Severity = TEXT("Error");
-				break;
-			case EMessageSeverity::Warning:         // 2
-			case EMessageSeverity::PerformanceWarning: // 3
+			}
+			else if (Node->ErrorType <= EMessageSeverity::Warning)
+			{
 				Severity = TEXT("Warning");
-				break;
-			default:
+			}
+			else
+			{
 				Severity = TEXT("Info");
-				break;
 			}
 			NodeData.CompilerMessage = FString::Printf(TEXT("%s: %s"), *Severity, *Node->ErrorMsg);
 		}

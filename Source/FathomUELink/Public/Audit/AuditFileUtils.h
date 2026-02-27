@@ -39,6 +39,9 @@ struct FATHOMUELINK_API FAuditFileUtils
 	/** Write audit content to disk. Returns true on success. */
 	static bool WriteAuditFile(const FString& Content, const FString& OutputPath);
 
+	/** Write (or overwrite) audit-manifest.json in Saved/Fathom/. */
+	static void WriteAuditManifest();
+
 	/**
 	 * Returns true if the given Blueprint native class is safe to load and audit.
 	 * Some Blueprint subclasses (ControlRig, RigVM) crash during LoadObject because

@@ -10,10 +10,13 @@ class IHttpRouter;
  * and other editor functionality over HTTP (ports 19900-19910).
  * Writes a marker file so the Rider plugin can discover and proxy requests.
  */
+// TODO: As handler count grows, consider splitting route registration and handler
+// implementations into domain-specific files (e.g. FathomHttpAssetHandlers,
+// FathomHttpLiveCodingHandlers) similar to the Rider side's Handlers/ directory.
 class FATHOMUELINK_API FFathomHttpServer
 {
 public:
-	FFathomHttpServer();
+	FFathomHttpServer() = default;
 	~FFathomHttpServer();
 
 	/** Bind to a port, register routes, write marker file. */

@@ -8,6 +8,7 @@
 #include "Engine/DataAsset.h"
 #include "Engine/DataTable.h"
 #include "StructUtils/UserDefinedStruct.h"
+#include "Audit/AuditFileUtils.h"
 #include "Misc/FileHelper.h"
 
 UBlueprintAuditCommandlet::UBlueprintAuditCommandlet()
@@ -263,6 +264,8 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 			}
 		}
 	}
+
+	FAuditFileUtils::WriteAuditManifest();
 
 	const double Elapsed = FPlatformTime::Seconds() - StartTime;
 	UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Audit complete, %d written, %d skipped, %d failed in %.2fs"),

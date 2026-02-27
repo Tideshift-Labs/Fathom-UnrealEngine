@@ -1,4 +1,5 @@
 #include "FathomHttpServer.h"
+#include "FathomHttpHelpers.h"
 
 #include "BlueprintAuditor.h"
 #include "FathomUELinkModule.h"
@@ -72,23 +73,20 @@ bool FFathomHttpServer::HandleAssetQuery(const FHttpServerRequest& Request, cons
 
 	if (AssetPath.IsEmpty())
 	{
-		TSharedRef<FJsonObject> ErrorJson = MakeShared<FJsonObject>();
-		ErrorJson->SetStringField(TEXT("error"), TEXT("Missing required 'asset' query parameter"));
-		ErrorJson->SetStringField(TEXT("usage"), bGetDependencies
-			? TEXT("/asset-refs/dependencies?asset=/Game/Path/To/Asset")
-			: TEXT("/asset-refs/referencers?asset=/Game/Path/To/Asset"));
-
-		FString Body;
-		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
-		FJsonSerializer::Serialize(ErrorJson, Writer);
-
-		auto Response = FHttpServerResponse::Create(Body, TEXT("application/json"));
-		Response->Code = EHttpServerResponseCodes::BadRequest;
-		OnComplete(MoveTemp(Response));
-		return true;
+		return FathomHttp::SendError(OnComplete, EHttpServerResponseCodes::BadRequest,
+			TEXT("Missing required 'asset' query parameter"),
+			bGetDependencies
+				? TEXT("/asset-refs/dependencies?asset=/Game/Path/To/Asset")
+				: TEXT("/asset-refs/referencers?asset=/Game/Path/To/Asset"));
 	}
 
-	IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	auto* AssetRegistryModule = FModuleManager::GetModulePtr<FAssetRegistryModule>("AssetRegistry");
+	if (!AssetRegistryModule)
+	{
+		return FathomHttp::SendError(OnComplete, EHttpServerResponseCodes::ServerError,
+			TEXT("AssetRegistry module is not available"));
+	}
+	IAssetRegistry& Registry = AssetRegistryModule->Get();
 
 	// Check if this package actually exists in the registry
 	TArray<FAssetData> AssetDataList;
@@ -100,14 +98,7 @@ bool FFathomHttpServer::HandleAssetQuery(const FHttpServerRequest& Request, cons
 		ErrorJson->SetStringField(TEXT("asset"), AssetPath);
 		ErrorJson->SetStringField(TEXT("hint"), TEXT("Check that the package path is correct and the asset is loaded"));
 
-		FString Body;
-		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
-		FJsonSerializer::Serialize(ErrorJson, Writer);
-
-		auto Response = FHttpServerResponse::Create(Body, TEXT("application/json"));
-		Response->Code = EHttpServerResponseCodes::NotFound;
-		OnComplete(MoveTemp(Response));
-		return true;
+		return FathomHttp::SendJson(OnComplete, ErrorJson, EHttpServerResponseCodes::NotFound);
 	}
 
 	TArray<FAssetDependency> Results;
@@ -146,13 +137,7 @@ bool FFathomHttpServer::HandleAssetQuery(const FHttpServerRequest& Request, cons
 	const FString FieldName = bGetDependencies ? TEXT("dependencies") : TEXT("referencers");
 	ResponseJson->SetArrayField(FieldName, EntriesArray);
 
-	FString Body;
-	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
-	FJsonSerializer::Serialize(ResponseJson, Writer);
-
-	auto Response = FHttpServerResponse::Create(Body, TEXT("application/json"));
-	OnComplete(MoveTemp(Response));
-	return true;
+	return FathomHttp::SendJson(OnComplete, ResponseJson);
 }
 
 bool FFathomHttpServer::HandleSearch(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
@@ -179,18 +164,9 @@ bool FFathomHttpServer::HandleSearch(const FHttpServerRequest& Request, const FH
 	// Require at least one of: query, class filter, or path prefix
 	if (Query.IsEmpty() && ClassFilter.IsEmpty() && PathPrefix.IsEmpty())
 	{
-		TSharedRef<FJsonObject> ErrorJson = MakeShared<FJsonObject>();
-		ErrorJson->SetStringField(TEXT("error"), TEXT("Provide a 'q' search term and/or filters ('class', 'pathPrefix')"));
-		ErrorJson->SetStringField(TEXT("usage"), TEXT("/asset-refs/search?q=term or /asset-refs/search?class=WidgetBlueprint&pathPrefix=/Game/UI"));
-
-		FString Body;
-		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
-		FJsonSerializer::Serialize(ErrorJson, Writer);
-
-		auto Response = FHttpServerResponse::Create(Body, TEXT("application/json"));
-		Response->Code = EHttpServerResponseCodes::BadRequest;
-		OnComplete(MoveTemp(Response));
-		return true;
+		return FathomHttp::SendError(OnComplete, EHttpServerResponseCodes::BadRequest,
+			TEXT("Provide a 'q' search term and/or filters ('class', 'pathPrefix')"),
+			TEXT("/asset-refs/search?q=term or /asset-refs/search?class=WidgetBlueprint&pathPrefix=/Game/UI"));
 	}
 
 	int32 Limit = 50;
@@ -200,7 +176,13 @@ bool FFathomHttpServer::HandleSearch(const FHttpServerRequest& Request, const FH
 		if (Limit <= 0) Limit = 50;
 	}
 
-	IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	auto* AssetRegistryModule = FModuleManager::GetModulePtr<FAssetRegistryModule>("AssetRegistry");
+	if (!AssetRegistryModule)
+	{
+		return FathomHttp::SendError(OnComplete, EHttpServerResponseCodes::ServerError,
+			TEXT("AssetRegistry module is not available"));
+	}
+	IAssetRegistry& Registry = AssetRegistryModule->Get();
 
 	// Build FARFilter so the registry handles path and class filtering internally,
 	// avoiding iteration over engine/plugin assets entirely.
@@ -340,13 +322,7 @@ bool FFathomHttpServer::HandleSearch(const FHttpServerRequest& Request, const FH
 
 	ResponseJson->SetArrayField(TEXT("results"), ResultsArray);
 
-	FString Body;
-	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
-	FJsonSerializer::Serialize(ResponseJson, Writer);
-
-	auto Response = FHttpServerResponse::Create(Body, TEXT("application/json"));
-	OnComplete(MoveTemp(Response));
-	return true;
+	return FathomHttp::SendJson(OnComplete, ResponseJson);
 }
 
 bool FFathomHttpServer::HandleShow(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
@@ -359,21 +335,18 @@ bool FFathomHttpServer::HandleShow(const FHttpServerRequest& Request, const FHtt
 
 	if (PackagePath.IsEmpty())
 	{
-		TSharedRef<FJsonObject> ErrorJson = MakeShared<FJsonObject>();
-		ErrorJson->SetStringField(TEXT("error"), TEXT("Missing required 'package' query parameter"));
-		ErrorJson->SetStringField(TEXT("usage"), TEXT("/asset-refs/show?package=/Game/Path/To/Asset"));
-
-		FString Body;
-		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
-		FJsonSerializer::Serialize(ErrorJson, Writer);
-
-		auto Response = FHttpServerResponse::Create(Body, TEXT("application/json"));
-		Response->Code = EHttpServerResponseCodes::BadRequest;
-		OnComplete(MoveTemp(Response));
-		return true;
+		return FathomHttp::SendError(OnComplete, EHttpServerResponseCodes::BadRequest,
+			TEXT("Missing required 'package' query parameter"),
+			TEXT("/asset-refs/show?package=/Game/Path/To/Asset"));
 	}
 
-	IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	auto* AssetRegistryModule = FModuleManager::GetModulePtr<FAssetRegistryModule>("AssetRegistry");
+	if (!AssetRegistryModule)
+	{
+		return FathomHttp::SendError(OnComplete, EHttpServerResponseCodes::ServerError,
+			TEXT("AssetRegistry module is not available"));
+	}
+	IAssetRegistry& Registry = AssetRegistryModule->Get();
 
 	TArray<FAssetData> AssetDataList;
 	Registry.GetAssetsByPackageName(FName(*PackagePath), AssetDataList, true);
@@ -383,14 +356,7 @@ bool FFathomHttpServer::HandleShow(const FHttpServerRequest& Request, const FHtt
 		ErrorJson->SetStringField(TEXT("error"), TEXT("Asset not found in registry"));
 		ErrorJson->SetStringField(TEXT("package"), PackagePath);
 
-		FString Body;
-		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
-		FJsonSerializer::Serialize(ErrorJson, Writer);
-
-		auto Response = FHttpServerResponse::Create(Body, TEXT("application/json"));
-		Response->Code = EHttpServerResponseCodes::NotFound;
-		OnComplete(MoveTemp(Response));
-		return true;
+		return FathomHttp::SendJson(OnComplete, ErrorJson, EHttpServerResponseCodes::NotFound);
 	}
 
 	const FAssetData& Asset = AssetDataList[0];
@@ -434,11 +400,5 @@ bool FFathomHttpServer::HandleShow(const FHttpServerRequest& Request, const FHtt
 	}
 	ResponseJson->SetObjectField(TEXT("tags"), TagsJson);
 
-	FString Body;
-	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
-	FJsonSerializer::Serialize(ResponseJson, Writer);
-
-	auto Response = FHttpServerResponse::Create(Body, TEXT("application/json"));
-	OnComplete(MoveTemp(Response));
-	return true;
+	return FathomHttp::SendJson(OnComplete, ResponseJson);
 }

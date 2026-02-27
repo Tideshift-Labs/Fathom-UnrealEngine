@@ -124,6 +124,28 @@ bool FAuditFileUtils::WriteAuditFile(const FString& Content, const FString& Outp
 	return false;
 }
 
+void FAuditFileUtils::WriteAuditManifest()
+{
+	const FString VersionDir = FString::Printf(TEXT("v%d"), AuditSchemaVersion);
+	const FString AuditDir = FString::Printf(TEXT("Saved/Fathom/Audit/%s"), *VersionDir);
+
+	const FString Json = FString::Printf(
+		TEXT("{\n  \"version\": %d,\n  \"auditDir\": \"%s\"\n}\n"),
+		AuditSchemaVersion, *AuditDir);
+
+	const FString ManifestPath = FPaths::ConvertRelativePathToFull(
+		FPaths::ProjectDir() / TEXT("Saved") / TEXT("Fathom") / TEXT("audit-manifest.json"));
+
+	if (FFileHelper::SaveStringToFile(Json, *ManifestPath))
+	{
+		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Wrote audit manifest to %s"), *ManifestPath);
+	}
+	else
+	{
+		UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to write audit manifest to %s"), *ManifestPath);
+	}
+}
+
 bool FAuditFileUtils::IsSupportedBlueprintClass(const FTopLevelAssetPath& ClassPath)
 {
 	// Previously excluded ControlRig/RigVM because LoadObject triggered fatal

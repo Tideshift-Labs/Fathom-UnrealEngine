@@ -12,6 +12,7 @@
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
+#include "Audit/AuditFileUtils.h"
 #include "UObject/ObjectSaveContext.h"
 
 void UBlueprintAuditSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -28,6 +29,8 @@ void UBlueprintAuditSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	StaleCheckPhase = EStaleCheckPhase::WaitingForRegistry;
 	StaleCheckTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
 		FTickerDelegate::CreateUObject(this, &UBlueprintAuditSubsystem::OnStaleCheckTick));
+
+	FAuditFileUtils::WriteAuditManifest();
 
 	UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Subsystem initialized, watching for Blueprint saves."));
 }

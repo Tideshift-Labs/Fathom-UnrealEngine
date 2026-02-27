@@ -20,6 +20,7 @@ This plugin works with the companion [Fathom](https://github.com/Tideshift-Labs/
 
 - **Audit schema version**: `FAuditFileUtils::AuditSchemaVersion` in `Audit/AuditFileUtils.h` (this repo) is the canonical constant. `FBlueprintAuditor::AuditSchemaVersion` proxies it for backward compatibility. Must match `BlueprintAuditService.AuditSchemaVersion` in the Rider repo. **Bump both together** when the audit format changes.
 - **Audit output path**: `Saved/Fathom/Audit/v<N>/Blueprints/...`. The version segment invalidates cached data automatically.
+- **Audit version manifest**: `FAuditFileUtils::WriteAuditManifest()` writes `Saved/Fathom/audit-manifest.json` with the current schema version and audit directory path. The Rider plugin reads this to discover the correct version directory, decoupling the two plugins' upgrade cadence.
 - **Commandlet name**: `BlueprintAudit` is hardcoded on both sides.
 
 ## Staleness Detection

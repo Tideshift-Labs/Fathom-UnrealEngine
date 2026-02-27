@@ -1,4 +1,5 @@
 #include "FathomHttpServer.h"
+#include "FathomHttpHelpers.h"
 
 #include "FathomUELinkModule.h"
 #include "Dom/JsonObject.h"
@@ -162,25 +163,10 @@ bool FFathomHttpServer::HandleLiveCodingStatus(const FHttpServerRequest& Request
 	ResponseJson->SetBoolField(TEXT("isEnabledForSession"), LiveCoding != nullptr && LiveCoding->IsEnabledForSession());
 	ResponseJson->SetBoolField(TEXT("isCompiling"), LiveCoding != nullptr && LiveCoding->IsCompiling());
 
-	FString Body;
-	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
-	FJsonSerializer::Serialize(ResponseJson, Writer);
-
-	auto Response = FHttpServerResponse::Create(Body, TEXT("application/json"));
-	OnComplete(MoveTemp(Response));
-	return true;
+	return FathomHttp::SendJson(OnComplete, ResponseJson);
 #else
-	TSharedRef<FJsonObject> ErrorJson = MakeShared<FJsonObject>();
-	ErrorJson->SetStringField(TEXT("error"), TEXT("Live Coding is only available on Windows"));
-
-	FString Body;
-	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
-	FJsonSerializer::Serialize(ErrorJson, Writer);
-
-	auto Response = FHttpServerResponse::Create(Body, TEXT("application/json"));
-	Response->Code = EHttpServerResponseCodes::NotSupported;
-	OnComplete(MoveTemp(Response));
-	return true;
+	return FathomHttp::SendError(OnComplete, EHttpServerResponseCodes::NotSupported,
+		TEXT("Live Coding is only available on Windows"));
 #endif
 }
 
@@ -204,14 +190,7 @@ bool FFathomHttpServer::HandleLiveCodingCompile(const FHttpServerRequest& Reques
 		ErrorJson->SetStringField(TEXT("result"), TEXT("NotStarted"));
 		ErrorJson->SetStringField(TEXT("resultText"), TEXT("Live Coding has not been started. Enable Live Coding in the editor and ensure it has started."));
 
-		FString Body;
-		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
-		FJsonSerializer::Serialize(ErrorJson, Writer);
-
-		auto Response = FHttpServerResponse::Create(Body, TEXT("application/json"));
-		Response->Code = EHttpServerResponseCodes::BadRequest;
-		OnComplete(MoveTemp(Response));
-		return true;
+		return FathomHttp::SendJson(OnComplete, ErrorJson, EHttpServerResponseCodes::BadRequest);
 	}
 
 	if (LiveCoding->IsCompiling())
@@ -220,14 +199,7 @@ bool FFathomHttpServer::HandleLiveCodingCompile(const FHttpServerRequest& Reques
 		ErrorJson->SetStringField(TEXT("result"), TEXT("AlreadyCompiling"));
 		ErrorJson->SetStringField(TEXT("resultText"), TEXT("A Live Coding compile is already in progress."));
 
-		FString Body;
-		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
-		FJsonSerializer::Serialize(ErrorJson, Writer);
-
-		auto Response = FHttpServerResponse::Create(Body, TEXT("application/json"));
-		Response->Code = EHttpServerResponseCodes::BadRequest;
-		OnComplete(MoveTemp(Response));
-		return true;
+		return FathomHttp::SendJson(OnComplete, ErrorJson, EHttpServerResponseCodes::BadRequest);
 	}
 
 	// Set up log capture before compile
@@ -285,24 +257,9 @@ bool FFathomHttpServer::HandleLiveCodingCompile(const FHttpServerRequest& Reques
 		}
 	}
 
-	FString Body;
-	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
-	FJsonSerializer::Serialize(ResponseJson, Writer);
-
-	auto Response = FHttpServerResponse::Create(Body, TEXT("application/json"));
-	OnComplete(MoveTemp(Response));
-	return true;
+	return FathomHttp::SendJson(OnComplete, ResponseJson);
 #else
-	TSharedRef<FJsonObject> ErrorJson = MakeShared<FJsonObject>();
-	ErrorJson->SetStringField(TEXT("error"), TEXT("Live Coding is only available on Windows"));
-
-	FString Body;
-	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
-	FJsonSerializer::Serialize(ErrorJson, Writer);
-
-	auto Response = FHttpServerResponse::Create(Body, TEXT("application/json"));
-	Response->Code = EHttpServerResponseCodes::NotSupported;
-	OnComplete(MoveTemp(Response));
-	return true;
+	return FathomHttp::SendError(OnComplete, EHttpServerResponseCodes::NotSupported,
+		TEXT("Live Coding is only available on Windows"));
 #endif
 }
