@@ -51,7 +51,7 @@ UnrealEditor-Cmd.exe "path/to/Project.uproject" -run=BlueprintAudit -AssetPath=/
 - **All Blueprints**: `<ProjectDir>/Saved/Fathom/Audit/v<N>/Blueprints/<relative_path>.md`
 - **Single Blueprint**: Specified via `-Output` or defaults to `<ProjectDir>/BlueprintAudit.md`
 
-The `v<N>` segment is the audit schema version (`FBlueprintAuditor::AuditSchemaVersion`). When the version is bumped, all cached files are automatically invalidated because no files exist at the new path.
+The `v<N>` segment is the audit schema version (`FAuditFileUtils::AuditSchemaVersion`). When the version is bumped, all cached files are automatically invalidated because no files exist at the new path.
 
 ### On-Save (Automatic)
 

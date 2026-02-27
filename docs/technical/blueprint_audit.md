@@ -33,15 +33,32 @@ The UE plugin writes Markdown files. The Rider plugin reads them. That is the en
 3. **Debuggability.** The Markdown files are human-readable. You can `cat` them, diff them, grep them. When something goes wrong you can inspect the output directly.
 4. **CI compatibility.** The commandlet can run in a headless build pipeline and produce the same output. No server process needed.
 
+## Modular architecture
+
+The audit system is split into domain-specific auditor structs, each covering one asset type:
+
+| Struct | Asset type | Location |
+|--------|-----------|----------|
+| `FBlueprintGraphAuditor` | Blueprint, Graph, Widget | `Audit/BlueprintGraphAuditor.h/.cpp` |
+| `FDataTableAuditor` | DataTable | `Audit/DataTableAuditor.h/.cpp` |
+| `FDataAssetAuditor` | DataAsset | `Audit/DataAssetAuditor.h/.cpp` |
+| `FUserDefinedStructAuditor` | UserDefinedStruct | `Audit/UserDefinedStructAuditor.h/.cpp` |
+| `FControlRigAuditor` | ControlRig | `Audit/ControlRigAuditor.h/.cpp` |
+| `FAuditFileUtils` | Cross-cutting (paths, hashing, I/O) | `Audit/AuditFileUtils.h/.cpp` |
+
+All POD data structs live in `Audit/AuditTypes.h`. A shared `CleanExportedValue()` helper used by multiple auditors lives in `Private/Audit/AuditHelpers.h/.cpp` under the `FathomAuditHelpers` namespace.
+
+`FBlueprintAuditor` (in `BlueprintAuditor.h`) is a thin facade that delegates every method to the corresponding domain auditor. It preserves backward compatibility so existing consumers (commandlet, subsystem, HTTP server) work without changes.
+
 ## Two-phase architecture (game thread / background thread)
 
 Blueprint data extraction requires access to `UObject` pointers, which are only safe to read on the game thread. But file I/O, hashing, and Markdown serialization should not block the editor UI.
 
 The solution is a two-phase design:
 
-### Phase 1: `GatherBlueprintData()` (game thread)
+### Phase 1: `GatherData()` / `GatherBlueprintData()` (game thread)
 
-Reads `UBlueprint*` and populates plain-old-data (POD) structs (`FBlueprintAuditData`, `FGraphAuditData`, etc.) that contain no UObject pointers. This is fast since it only copies data out of the engine's in-memory representation.
+Reads `UBlueprint*` (or `UDataTable*`, `UDataAsset*`, etc.) and populates plain-old-data (POD) structs (`FBlueprintAuditData`, `FGraphAuditData`, etc.) that contain no UObject pointers. This is fast since it only copies data out of the engine's in-memory representation.
 
 Extracted data includes:
 - Metadata (name, path, parent class, blueprint type)
@@ -122,7 +139,7 @@ Both sides compute MD5 independently. The UE plugin uses `FMD5Hash::HashFile()`.
 
 ## Schema versioning
 
-The audit format is versioned via `FBlueprintAuditor::AuditSchemaVersion` (C++) and `BlueprintAuditService.AuditSchemaVersion` (C#). The version is embedded in the output path:
+The audit format is versioned via `FAuditFileUtils::AuditSchemaVersion` (C++, canonical constant; `FBlueprintAuditor::AuditSchemaVersion` proxies it) and `BlueprintAuditService.AuditSchemaVersion` (C#). The version is embedded in the output path:
 
 ```
 Saved/Fathom/Audit/v4/Blueprints/UI/Widgets/WBP_Foo.md
@@ -232,10 +249,10 @@ When modifying the audit system, keep these in sync between the UE plugin and th
 
 | Item | UE plugin location | Rider plugin location |
 |------|-------------------|----------------------|
-| Schema version | `BlueprintAuditor.h`: `AuditSchemaVersion` | `BlueprintAuditService.cs`: `AuditSchemaVersion` |
-| Audit output path pattern | `GetAuditBaseDir()`: `Saved/Fathom/Audit/v<N>/Blueprints/` | `BlueprintAuditService.cs`: hardcoded path construction |
+| Schema version | `Audit/AuditFileUtils.h`: `FAuditFileUtils::AuditSchemaVersion` | `BlueprintAuditService.cs`: `AuditSchemaVersion` |
+| Audit output path pattern | `FAuditFileUtils::GetAuditBaseDir()`: `Saved/Fathom/Audit/v<N>/Blueprints/` | `BlueprintAuditService.cs`: hardcoded path construction |
 | Commandlet name | `BlueprintAuditCommandlet.h` class name -> `BlueprintAudit` | `BlueprintAuditService.cs`: `-run=BlueprintAudit` |
-| Header field names | `BlueprintAuditor.cpp` `SerializeToMarkdown()` | `BlueprintAuditService.cs` `ParseAuditHeader()` and `ReadAndCheckBlueprintAudit()` |
+| Header field names | Domain auditor `SerializeToMarkdown()` methods | `BlueprintAuditService.cs` `ParseAuditHeader()` and `ReadAndCheckBlueprintAudit()` |
 | Hash algorithm | `FMD5Hash::HashFile()` (MD5, lowercase hex) | `MD5.Create()` + `BitConverter.ToString().Replace("-","").ToLowerInvariant()` |
 
 ## Testing

@@ -18,7 +18,7 @@ Module type is **Editor-only** (`Type: Editor`) and does not ship in packaged/co
 
 This plugin works with the companion [Fathom](https://github.com/Tideshift-Labs/Fathom) Rider plugin. The contract is purely filesystem conventions, with no IPC, no sockets, and no compile-time dependencies.
 
-- **Audit schema version**: `FBlueprintAuditor::AuditSchemaVersion` in `BlueprintAuditor.h` (this repo) must match `BlueprintAuditService.AuditSchemaVersion` in the Rider repo. **Bump both together** when the JSON schema changes.
+- **Audit schema version**: `FAuditFileUtils::AuditSchemaVersion` in `Audit/AuditFileUtils.h` (this repo) is the canonical constant. `FBlueprintAuditor::AuditSchemaVersion` proxies it for backward compatibility. Must match `BlueprintAuditService.AuditSchemaVersion` in the Rider repo. **Bump both together** when the audit format changes.
 - **Audit output path**: `Saved/Fathom/Audit/v<N>/Blueprints/...`. The version segment invalidates cached data automatically.
 - **Commandlet name**: `BlueprintAudit` is hardcoded on both sides.
 

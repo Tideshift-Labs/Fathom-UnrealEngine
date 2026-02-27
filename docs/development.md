@@ -38,6 +38,6 @@ Verify output at `<ProjectDir>/Saved/Fathom/Audit/v<N>/Blueprints/`.
 
 This plugin works with the companion [Fathom](https://github.com/Tideshift-Labs/Fathom) Rider plugin. When modifying the audit schema, keep these in sync:
 
-- **Audit schema version**: `FBlueprintAuditor::AuditSchemaVersion` in `BlueprintAuditor.h` (this repo) must match `BlueprintAuditService.AuditSchemaVersion` in the Rider repo. Bump both together when the audit format changes.
+- **Audit schema version**: `FAuditFileUtils::AuditSchemaVersion` in `Audit/AuditFileUtils.h` (this repo) is the canonical constant. `FBlueprintAuditor::AuditSchemaVersion` proxies it for backward compatibility. Must match `BlueprintAuditService.AuditSchemaVersion` in the Rider repo. Bump both together when the audit format changes.
 - **Audit output path**: `Saved/Fathom/Audit/v<N>/Blueprints/...`. The `v<N>` version segment invalidates cached files automatically. Both sides must agree on this path structure.
 - **Commandlet name**: `BlueprintAudit`, hardcoded on both sides. The Rider plugin invokes `UnrealEditor-Cmd.exe -run=BlueprintAudit`.
