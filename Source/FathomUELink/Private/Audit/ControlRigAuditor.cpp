@@ -2,7 +2,7 @@
 
 #include "Audit/AuditFileUtils.h"
 #include "FathomUELinkModule.h"
-#include "ControlRigBlueprintLegacy.h"
+#include "ControlRigBlueprint.h"
 #include "RigVMModel/RigVMGraph.h"
 #include "RigVMModel/RigVMNode.h"
 #include "RigVMModel/RigVMPin.h"

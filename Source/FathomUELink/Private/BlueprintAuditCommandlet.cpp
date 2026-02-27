@@ -3,7 +3,7 @@
 #include "BlueprintAuditor.h"
 #include "FathomUELinkModule.h"
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "ControlRigBlueprintLegacy.h"
+#include "ControlRigBlueprint.h"
 #include "Engine/Blueprint.h"
 #include "Engine/DataAsset.h"
 #include "Engine/DataTable.h"

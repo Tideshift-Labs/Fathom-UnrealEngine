@@ -8,7 +8,7 @@
 #include "Engine/DataAsset.h"
 #include "Engine/DataTable.h"
 #include "StructUtils/UserDefinedStruct.h"
-#include "ControlRigBlueprintLegacy.h"
+#include "ControlRigBlueprint.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
