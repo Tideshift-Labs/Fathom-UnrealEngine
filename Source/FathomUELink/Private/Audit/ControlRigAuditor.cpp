@@ -2,7 +2,10 @@
 
 #include "Audit/AuditFileUtils.h"
 #include "FathomUELinkModule.h"
-#include "ControlRigBlueprint.h"
+#include "FathomControlRig.h"
+
+#if FATHOM_HAS_CONTROLRIG_BLUEPRINT
+
 #include "RigVMModel/RigVMGraph.h"
 #include "RigVMModel/RigVMNode.h"
 #include "RigVMModel/RigVMPin.h"
@@ -197,6 +200,17 @@ FControlRigAuditData FControlRigAuditor::GatherData(const UControlRigBlueprint* 
 
 	return Data;
 }
+
+#else // !FATHOM_HAS_CONTROLRIG_BLUEPRINT
+
+// Stub: ControlRig header not available on this engine version.
+// ControlRig assets are still audited via the generic Blueprint code path.
+FControlRigAuditData FControlRigAuditor::GatherData(const UControlRigBlueprint* /*CRBP*/)
+{
+	return FControlRigAuditData();
+}
+
+#endif // FATHOM_HAS_CONTROLRIG_BLUEPRINT
 
 FString FControlRigAuditor::SerializeToMarkdown(const FControlRigAuditData& Data)
 {

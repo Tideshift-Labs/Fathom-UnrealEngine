@@ -8,7 +8,7 @@
 #include "Engine/DataAsset.h"
 #include "Engine/DataTable.h"
 #include "StructUtils/UserDefinedStruct.h"
-#include "ControlRigBlueprint.h"
+#include "FathomControlRig.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
@@ -114,6 +114,7 @@ void UBlueprintAuditSubsystem::OnPackageSaved(const FString& PackageFileName, UP
 	// Walk all objects in the saved package, looking for auditable assets
 	ForEachObjectWithPackage(Package, [this](UObject* Object)
 	{
+#if FATHOM_HAS_CONTROLRIG_BLUEPRINT
 		if (const UControlRigBlueprint* CRBP = Cast<UControlRigBlueprint>(Object))
 		{
 			FControlRigAuditData Data = FBlueprintAuditor::GatherControlRigData(CRBP);
@@ -129,7 +130,9 @@ void UBlueprintAuditSubsystem::OnPackageSaved(const FString& PackageFileName, UP
 			UE_LOG(LogFathomUELink, Verbose, TEXT("Fathom: Dispatching async audit for saved ControlRig %s"), *Data.Name);
 			DispatchBackgroundWrite(MoveTemp(Data));
 		}
-		else if (const UBlueprint* BP = Cast<UBlueprint>(Object))
+		else
+#endif
+		if (const UBlueprint* BP = Cast<UBlueprint>(Object))
 		{
 			if (!FBlueprintAuditor::IsSupportedBlueprintClass(BP->GetClass()->GetClassPathName()))
 			{
@@ -449,12 +452,14 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 					UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load Blueprint %s for re-audit"), *PackageName);
 					break;
 				}
+#if FATHOM_HAS_CONTROLRIG_BLUEPRINT
 				if (const UControlRigBlueprint* CRBP = Cast<UControlRigBlueprint>(BP))
 				{
 					FControlRigAuditData Data = FBlueprintAuditor::GatherControlRigData(CRBP);
 					DispatchBackgroundWrite(MoveTemp(Data));
 				}
 				else
+#endif
 				{
 					FBlueprintAuditData Data = FBlueprintAuditor::GatherBlueprintData(BP);
 					DispatchBackgroundWrite(MoveTemp(Data));
