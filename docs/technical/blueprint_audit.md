@@ -174,7 +174,7 @@ When the format changes, bump the version on both sides. All existing cached fil
 
 - **Node-level spatial layout** (X/Y positions). This is deliberately omitted because it is irrelevant for semantic analysis and would bloat the output.
 - ~~**Pin connections between nodes.**~~ As of V3/V4, full graph topology (exec flows and data flows) is captured. This is no longer a limitation.
-- **Animation Blueprint internals.** `UAnimBlueprint` state machines, blend spaces, and anim graph nodes are not extracted. The auditor handles the base `UBlueprint` class and the `UWidgetBlueprint` subclass, but not `UAnimBlueprint`.
+- **Animation Blueprint anim graphs.** `UAnimBlueprint` assets are audited (event graph, variables, property overrides), but anim-specific graphs (state machines, blend spaces, anim graph nodes) are not extracted.
 - **Data-only Blueprints.** Blueprints with no graphs (pure data containers) are still audited but produce minimal output (just metadata, variables, and property overrides). This is correct behavior, not a limitation.
 - **Comment nodes and reroute nodes.** These are filtered out implicitly because they don't match any of the `UK2Node_*` cast checks.
 
