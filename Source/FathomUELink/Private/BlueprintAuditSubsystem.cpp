@@ -513,7 +513,10 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 
 			if (++AssetsSinceGC >= GCInterval)
 			{
-				CollectGarbage(RF_NoFlags);
+				if (!IsGarbageCollecting())
+				{
+					CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+				}
 				AssetsSinceGC = 0;
 			}
 		}
