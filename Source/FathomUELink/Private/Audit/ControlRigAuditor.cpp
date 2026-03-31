@@ -9,7 +9,6 @@
 #include "RigVMModel/RigVMGraph.h"
 #include "RigVMModel/RigVMNode.h"
 #include "RigVMModel/RigVMPin.h"
-#include "RigVMModel/RigVMLink.h"
 #include "RigVMModel/Nodes/RigVMUnitNode.h"
 #include "RigVMModel/Nodes/RigVMVariableNode.h"
 #include "RigVMModel/Nodes/RigVMFunctionReferenceNode.h"
@@ -31,6 +30,33 @@ namespace
 		case ERigVMPinDirection::Hidden:  return TEXT("Hidden");
 		default:                          return TEXT("Unknown");
 		}
+	}
+
+	/** Follow target-direction links through URigVMRerouteNode nodes to find real endpoints. */
+	TArray<URigVMPin*> TraceThroughReroutes(URigVMPin* Pin, TSet<URigVMNode*>& Visited)
+	{
+		TArray<URigVMPin*> Result;
+		for (URigVMPin* Linked : Pin->GetLinkedTargetPins())
+		{
+			URigVMNode* Owner = Linked->GetNode();
+			if (URigVMRerouteNode* Reroute = Cast<URigVMRerouteNode>(Owner))
+			{
+				bool bAlreadyVisited = false;
+				Visited.Add(Reroute, &bAlreadyVisited);
+				if (bAlreadyVisited)
+				{
+					continue;
+				}
+
+				// Reroute has a single IO pin; follow its downstream targets
+				Result.Append(TraceThroughReroutes(Linked, Visited));
+			}
+			else
+			{
+				Result.Add(Linked);
+			}
+		}
+		return Result;
 	}
 }
 
@@ -82,6 +108,7 @@ FControlRigAuditData FControlRigAuditor::GatherData(const UControlRigBlueprint* 
 		for (URigVMNode* Node : Graph->GetNodes())
 		{
 			if (!Node) continue;
+
 			if (Cast<URigVMRerouteNode>(Node) || Cast<URigVMCommentNode>(Node))
 			{
 				continue;
@@ -170,29 +197,37 @@ FControlRigAuditData FControlRigAuditor::GatherData(const UControlRigBlueprint* 
 			GraphData.Nodes.Add(MoveTemp(NodeData));
 		}
 
-		// --- Edges ---
-		for (URigVMLink* Link : Graph->GetLinks())
+		// --- Edges (trace through reroute nodes to find real endpoints) ---
+		for (const auto& Pair : NodeIdMap)
 		{
-			if (!Link) continue;
+			URigVMNode* Node = Pair.Key;
+			const int32 SourceId = Pair.Value;
 
-			URigVMPin* SourcePin = Link->GetSourcePin();
-			URigVMPin* TargetPin = Link->GetTargetPin();
-			if (!SourcePin || !TargetPin) continue;
+			for (URigVMPin* Pin : Node->GetPins())
+			{
+				if (Pin->GetDirection() != ERigVMPinDirection::Output
+					&& Pin->GetDirection() != ERigVMPinDirection::IO)
+				{
+					continue;
+				}
 
-			URigVMNode* SourceNode = SourcePin->GetNode();
-			URigVMNode* TargetNode = TargetPin->GetNode();
-			if (!SourceNode || !TargetNode) continue;
+				TSet<URigVMNode*> Visited;
+				TArray<URigVMPin*> ResolvedPins = TraceThroughReroutes(Pin, Visited);
 
-			const int32* SourceIdPtr = NodeIdMap.Find(SourceNode);
-			const int32* TargetIdPtr = NodeIdMap.Find(TargetNode);
-			if (!SourceIdPtr || !TargetIdPtr) continue; // skipped nodes (reroute/comment)
+				for (URigVMPin* TargetPin : ResolvedPins)
+				{
+					URigVMNode* TargetNode = TargetPin->GetNode();
+					const int32* TargetIdPtr = NodeIdMap.Find(TargetNode);
+					if (!TargetIdPtr) continue;
 
-			FRigVMEdgeAuditData Edge;
-			Edge.SourceNodeId = *SourceIdPtr;
-			Edge.SourcePinPath = SourcePin->GetPinPath();
-			Edge.TargetNodeId = *TargetIdPtr;
-			Edge.TargetPinPath = TargetPin->GetPinPath();
-			GraphData.Edges.Add(MoveTemp(Edge));
+					FRigVMEdgeAuditData Edge;
+					Edge.SourceNodeId = SourceId;
+					Edge.SourcePinPath = Pin->GetPinPath();
+					Edge.TargetNodeId = *TargetIdPtr;
+					Edge.TargetPinPath = TargetPin->GetPinPath();
+					GraphData.Edges.Add(MoveTemp(Edge));
+				}
+			}
 		}
 
 		Data.Graphs.Add(MoveTemp(GraphData));
