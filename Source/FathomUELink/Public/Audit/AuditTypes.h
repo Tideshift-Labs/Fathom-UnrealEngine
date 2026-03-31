@@ -23,6 +23,8 @@ struct FComponentAuditData
 {
 	FString Name;
 	FString Class;
+	FString ParentComponentName;
+	TArray<FPropertyOverrideData> PropertyOverrides;
 };
 
 struct FTimelineAuditData

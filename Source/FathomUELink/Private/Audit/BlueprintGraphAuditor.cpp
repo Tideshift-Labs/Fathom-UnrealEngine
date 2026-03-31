@@ -194,15 +194,66 @@ FBlueprintAuditData FBlueprintGraphAuditor::GatherBlueprintData(const UBlueprint
 	// --- Components (Actor-based BPs) ---
 	if (BP->SimpleConstructionScript)
 	{
+		// Build a map from node to parent for hierarchy
+		TMap<const USCS_Node*, const USCS_Node*> ParentMap;
 		for (const USCS_Node* Node : BP->SimpleConstructionScript->GetAllNodes())
 		{
-			if (Node && Node->ComponentClass)
+			if (!Node) continue;
+			for (const USCS_Node* Child : Node->ChildNodes)
 			{
-				FComponentAuditData CompData;
-				CompData.Name = Node->GetVariableName().ToString();
-				CompData.Class = Node->ComponentClass->GetName();
-				Data.Components.Add(MoveTemp(CompData));
+				if (Child)
+				{
+					ParentMap.Add(Child, Node);
+				}
 			}
+		}
+
+		for (const USCS_Node* Node : BP->SimpleConstructionScript->GetAllNodes())
+		{
+			if (!Node || !Node->ComponentClass) continue;
+
+			FComponentAuditData CompData;
+			CompData.Name = Node->GetVariableName().ToString();
+			CompData.Class = Node->ComponentClass->GetName();
+
+			// Parent hierarchy
+			if (const USCS_Node** ParentPtr = ParentMap.Find(Node))
+			{
+				CompData.ParentComponentName = (*ParentPtr)->GetVariableName().ToString();
+			}
+
+			// Per-component property overrides (compare template against class defaults)
+			if (UActorComponent* Template = Node->ComponentTemplate)
+			{
+				const UObject* ClassDefaults = Node->ComponentClass->GetDefaultObject();
+				for (TFieldIterator<FProperty> PropIt(Node->ComponentClass); PropIt; ++PropIt)
+				{
+					const FProperty* Prop = *PropIt;
+
+					if (!Prop->HasAnyPropertyFlags(CPF_Edit | CPF_Config | CPF_DisableEditOnInstance))
+					{
+						continue;
+					}
+
+					if (Prop->HasAnyPropertyFlags(CPF_Transient))
+					{
+						continue;
+					}
+
+					const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Template);
+					const void* DefaultPtr = Prop->ContainerPtrToValuePtr<void>(ClassDefaults);
+
+					if (!Prop->Identical(ValuePtr, DefaultPtr))
+					{
+						FPropertyOverrideData Override;
+						Override.Name = Prop->GetName();
+						Prop->ExportText_InContainer(0, Override.Value, Template, nullptr, nullptr, 0);
+						CompData.PropertyOverrides.Add(MoveTemp(Override));
+					}
+				}
+			}
+
+			Data.Components.Add(MoveTemp(CompData));
 		}
 	}
 
@@ -618,11 +669,55 @@ FString FBlueprintGraphAuditor::SerializeToMarkdown(const FBlueprintAuditData& D
 	if (Data.Components.Num() > 0)
 	{
 		Result += TEXT("\n## Components\n");
-		Result += TEXT("| Name | Class |\n");
-		Result += TEXT("|------|-------|\n");
+
+		// Build hierarchy tree using parent references
+		TMap<FString, TArray<const FComponentAuditData*>> ChildMap;
+		TArray<const FComponentAuditData*> Roots;
+
 		for (const FComponentAuditData& Comp : Data.Components)
 		{
-			Result += FString::Printf(TEXT("| %s | %s |\n"), *Comp.Name, *Comp.Class);
+			if (Comp.ParentComponentName.IsEmpty())
+			{
+				Roots.Add(&Comp);
+			}
+			else
+			{
+				ChildMap.FindOrAdd(Comp.ParentComponentName).Add(&Comp);
+			}
+		}
+
+		// Recursive tree renderer
+		TFunction<void(const FComponentAuditData*, int32)> RenderTree =
+			[&](const FComponentAuditData* Comp, int32 Depth)
+		{
+			for (int32 i = 0; i < Depth; ++i) Result += TEXT("  ");
+			Result += FString::Printf(TEXT("- %s (%s)\n"), *Comp->Name, *Comp->Class);
+
+			if (const TArray<const FComponentAuditData*>* Children = ChildMap.Find(Comp->Name))
+			{
+				for (const FComponentAuditData* Child : *Children)
+				{
+					RenderTree(Child, Depth + 1);
+				}
+			}
+		};
+
+		for (const FComponentAuditData* Root : Roots)
+		{
+			RenderTree(Root, 0);
+		}
+
+		// Per-component property override sections
+		for (const FComponentAuditData& Comp : Data.Components)
+		{
+			if (Comp.PropertyOverrides.Num() == 0) continue;
+
+			Result += FString::Printf(TEXT("\n### %s (%s)\n"), *Comp.Name, *Comp.Class);
+			for (const FPropertyOverrideData& Override : Comp.PropertyOverrides)
+			{
+				Result += FString::Printf(TEXT("- %s = %s\n"),
+					*Override.Name, *FathomAuditHelpers::CleanExportedValue(Override.Value));
+			}
 		}
 	}
 
