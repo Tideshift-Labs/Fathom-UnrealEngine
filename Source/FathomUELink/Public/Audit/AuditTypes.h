@@ -246,3 +246,67 @@ struct FBlueprintAuditData
 	/** Set if this is a Widget Blueprint. */
 	TOptional<FWidgetAuditData> WidgetTree;
 };
+
+// --- Material audit data ---
+
+struct FMaterialParameterData
+{
+	FString Name;
+	FString Value;
+};
+
+struct FMaterialExpressionData
+{
+	int32 Id = 0;
+	FString Type;   // e.g. "TextureSample", "Multiply", "ScalarParameter"
+	FString Name;   // parameter name if available, otherwise caption
+	TArray<FDefaultInputData> DefaultInputs;  // unconnected input pin defaults
+};
+
+struct FMaterialEdgeData
+{
+	int32 SourceNodeId = 0;
+	FString SourceOutput;  // output pin name
+	int32 TargetNodeId = 0;
+	FString TargetInput;   // input pin name
+};
+
+struct FMaterialOutputConnection
+{
+	FString OutputName;    // "BaseColor", "Metallic", "Roughness", etc.
+	int32 SourceNodeId = 0;
+	FString SourceOutput;
+};
+
+struct FMaterialAuditData
+{
+	FString Name;
+	FString Path;
+	FString PackageName;
+	FString SourceFilePath;
+	FString OutputPath;
+
+	bool bIsMaterialInstance = false;
+	FString ParentPath;
+
+	FString MaterialDomain;
+	FString BlendMode;
+	FString ShadingModel;
+	bool bTwoSided = false;
+
+	int32 ExpressionCount = 0;
+	int32 TextureSampleCount = 0;
+
+	TArray<FMaterialParameterData> ScalarParameters;
+	TArray<FMaterialParameterData> VectorParameters;
+	TArray<FMaterialParameterData> TextureParameters;
+	TArray<FMaterialParameterData> StaticSwitchParameters;
+
+	// All editable properties from the Details panel
+	TArray<FPropertyOverrideData> Properties;
+
+	// Expression graph (base materials only)
+	TArray<FMaterialExpressionData> Expressions;
+	TArray<FMaterialEdgeData> Edges;
+	TArray<FMaterialOutputConnection> OutputConnections;
+};

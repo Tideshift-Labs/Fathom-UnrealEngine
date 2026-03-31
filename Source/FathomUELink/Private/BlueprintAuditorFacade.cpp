@@ -85,6 +85,18 @@ FString FBlueprintAuditor::SerializeControlRigToMarkdown(const FControlRigAuditD
 	return FControlRigAuditor::SerializeToMarkdown(Data);
 }
 
+// --- Material ---
+
+FMaterialAuditData FBlueprintAuditor::GatherMaterialData(const UMaterialInterface* Material)
+{
+	return FMaterialAuditor::GatherData(Material);
+}
+
+FString FBlueprintAuditor::SerializeMaterialToMarkdown(const FMaterialAuditData& Data)
+{
+	return FMaterialAuditor::SerializeToMarkdown(Data);
+}
+
 // --- Legacy synchronous API ---
 
 FString FBlueprintAuditor::AuditBlueprint(const UBlueprint* BP)
