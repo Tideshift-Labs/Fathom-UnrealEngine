@@ -9,6 +9,9 @@
 #include "Engine/DataTable.h"
 #include "StructUtils/UserDefinedStruct.h"
 #include "Audit/AuditFileUtils.h"
+#include "Audit/MaterialAuditor.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialInstanceConstant.h"
 #include "Misc/FileHelper.h"
 
 UBlueprintAuditCommandlet::UBlueprintAuditCommandlet()
@@ -250,6 +253,90 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 
 			FUserDefinedStructAuditData Data = FBlueprintAuditor::GatherUserDefinedStructData(UDS);
 			const FString Markdown = FBlueprintAuditor::SerializeUserDefinedStructToMarkdown(Data);
+			if (FBlueprintAuditor::WriteAuditFile(Markdown, Data.OutputPath))
+			{
+				++SuccessCount;
+			}
+			else
+			{
+				++FailCount;
+			}
+
+			if (++AssetsSinceGC >= GCInterval)
+			{
+				CollectGarbage(RF_NoFlags);
+				AssetsSinceGC = 0;
+			}
+		}
+	}
+
+	// --- Material batch ---
+	{
+		TArray<FAssetData> AllMaterials;
+		AssetRegistry.GetAssetsByClass(UMaterial::StaticClass()->GetClassPathName(), AllMaterials, false);
+
+		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Auditing %d Material(s)..."), AllMaterials.Num());
+
+		for (const FAssetData& Asset : AllMaterials)
+		{
+			if (!Asset.PackageName.ToString().StartsWith(TEXT("/Game/")))
+			{
+				++SkipCount;
+				continue;
+			}
+
+			const UMaterial* Mat = Cast<UMaterial>(Asset.GetAsset());
+			if (!Mat)
+			{
+				++FailCount;
+				UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load Material %s"), *Asset.PackageName.ToString());
+				continue;
+			}
+
+			FMaterialAuditData Data = FMaterialAuditor::GatherData(Mat);
+			const FString Markdown = FMaterialAuditor::SerializeToMarkdown(Data);
+			if (FBlueprintAuditor::WriteAuditFile(Markdown, Data.OutputPath))
+			{
+				++SuccessCount;
+			}
+			else
+			{
+				++FailCount;
+			}
+
+			if (++AssetsSinceGC >= GCInterval)
+			{
+				CollectGarbage(RF_NoFlags);
+				AssetsSinceGC = 0;
+			}
+		}
+	}
+
+	// --- MaterialInstance batch ---
+	{
+		TArray<FAssetData> AllMaterialInstances;
+		AssetRegistry.GetAssetsByClass(UMaterialInstanceConstant::StaticClass()->GetClassPathName(), AllMaterialInstances, false);
+
+		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Auditing %d MaterialInstance(s)..."), AllMaterialInstances.Num());
+
+		for (const FAssetData& Asset : AllMaterialInstances)
+		{
+			if (!Asset.PackageName.ToString().StartsWith(TEXT("/Game/")))
+			{
+				++SkipCount;
+				continue;
+			}
+
+			const UMaterialInstanceConstant* MI = Cast<UMaterialInstanceConstant>(Asset.GetAsset());
+			if (!MI)
+			{
+				++FailCount;
+				UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load MaterialInstance %s"), *Asset.PackageName.ToString());
+				continue;
+			}
+
+			FMaterialAuditData Data = FMaterialAuditor::GatherData(MI);
+			const FString Markdown = FMaterialAuditor::SerializeToMarkdown(Data);
 			if (FBlueprintAuditor::WriteAuditFile(Markdown, Data.OutputPath))
 			{
 				++SuccessCount;

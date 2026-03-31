@@ -8,12 +8,14 @@
 #include "Audit/DataAssetAuditor.h"
 #include "Audit/UserDefinedStructAuditor.h"
 #include "Audit/ControlRigAuditor.h"
+#include "Audit/MaterialAuditor.h"
 
 class UBlueprint;
 class UControlRigBlueprint;
 class UDataAsset;
 class UDataTable;
 class UEdGraph;
+class UMaterialInterface;
 class UUserDefinedStruct;
 struct FEdGraphPinType;
 struct FTopLevelAssetPath;
@@ -83,6 +85,14 @@ struct FATHOMUELINK_API FBlueprintAuditor
 
 	/** Serialize gathered ControlRig data to Markdown. Computes SourceFileHash from SourceFilePath. Safe on any thread. */
 	static FString SerializeControlRigToMarkdown(const FControlRigAuditData& Data);
+
+	// --- Material gather + serialize ---
+
+	/** Gather all audit data from a Material or MaterialInstance into a POD struct. Must be called on the game thread. */
+	static FMaterialAuditData GatherMaterialData(const UMaterialInterface* Material);
+
+	/** Serialize gathered Material data to Markdown. Computes SourceFileHash from SourceFilePath. Safe on any thread. */
+	static FString SerializeMaterialToMarkdown(const FMaterialAuditData& Data);
 
 	// --- Legacy synchronous API (used by Commandlet and as a convenience wrapper) ---
 
