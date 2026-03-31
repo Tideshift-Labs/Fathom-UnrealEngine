@@ -18,7 +18,8 @@ Fathom-UnrealEngine/
     │       ├── DataTableAuditor.h               # FDataTableAuditor
     │       ├── DataAssetAuditor.h               # FDataAssetAuditor
     │       ├── UserDefinedStructAuditor.h       # FUserDefinedStructAuditor
-    │       └── ControlRigAuditor.h              # FControlRigAuditor
+    │       ├── ControlRigAuditor.h              # FControlRigAuditor
+    │       └── MaterialAuditor.h               # FMaterialAuditor
     └── Private/
         ├── FathomUELinkModule.cpp               # Module startup/shutdown
         ├── BlueprintAuditorFacade.cpp           # FBlueprintAuditor one-line delegates
@@ -35,7 +36,8 @@ Fathom-UnrealEngine/
             ├── DataTableAuditor.cpp             # DataTable gather + serialize
             ├── DataAssetAuditor.cpp             # DataAsset gather + serialize
             ├── UserDefinedStructAuditor.cpp     # UserDefinedStruct gather + serialize
-            └── ControlRigAuditor.cpp            # ControlRig gather + serialize
+            ├── ControlRigAuditor.cpp            # ControlRig gather + serialize
+            └── MaterialAuditor.cpp             # Material gather + serialize
 ```
 
 ## Core Files
@@ -47,6 +49,7 @@ The audit system is split into domain-specific auditors under `Audit/`. Each aud
 - **`Audit/DataAssetAuditor.cpp`**: Extracts DataAsset properties via CDO diff.
 - **`Audit/UserDefinedStructAuditor.cpp`**: Extracts UserDefinedStruct field definitions and defaults.
 - **`Audit/ControlRigAuditor.cpp`**: Extracts ControlRig RigVM graphs, nodes, pins, and edges.
+- **`Audit/MaterialAuditor.cpp`**: Extracts Material and MaterialInstance properties, parameters (scalar, vector, texture, static switch), and expression graph topology (nodes with pin defaults, edges, output connections).
 - **`Audit/AuditFileUtils.cpp`**: Cross-cutting utilities: paths, MD5 hashing, file I/O, schema version constant.
 - **`Audit/AuditHelpers.cpp`**: Internal `CleanExportedValue()` helper shared across auditors.
 - **`BlueprintAuditorFacade.cpp`**: Thin facade that delegates every `FBlueprintAuditor::` method to the corresponding domain auditor. Preserves backward compatibility for all existing consumers.

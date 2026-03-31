@@ -44,6 +44,7 @@ The audit system is split into domain-specific auditor structs, each covering on
 | `FDataAssetAuditor` | DataAsset | `Audit/DataAssetAuditor.h/.cpp` |
 | `FUserDefinedStructAuditor` | UserDefinedStruct | `Audit/UserDefinedStructAuditor.h/.cpp` |
 | `FControlRigAuditor` | ControlRig | `Audit/ControlRigAuditor.h/.cpp` |
+| `FMaterialAuditor` | Material, MaterialInstance | `Audit/MaterialAuditor.h/.cpp` |
 | `FAuditFileUtils` | Cross-cutting (paths, hashing, I/O) | `Audit/AuditFileUtils.h/.cpp` |
 
 All POD data structs live in `Audit/AuditTypes.h`. A shared `CleanExportedValue()` helper used by multiple auditors lives in `Private/Audit/AuditHelpers.h/.cpp` under the `FathomAuditHelpers` namespace.
