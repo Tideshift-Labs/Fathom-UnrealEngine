@@ -23,6 +23,13 @@ void UBlueprintAuditSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
 
+	// The commandlet handles its own auditing. Skip on-save hooks, stale
+	// check, and manifest write to avoid interfering with the batch run.
+	if (IsRunningCommandlet())
+	{
+		return;
+	}
+
 	UPackage::PackageSavedWithContextEvent.AddUObject(this, &UBlueprintAuditSubsystem::OnPackageSaved);
 
 	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
