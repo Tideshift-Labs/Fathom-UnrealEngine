@@ -12,7 +12,7 @@ struct FTopLevelAssetPath;
 struct FATHOMUELINK_API FAuditFileUtils
 {
 	/** Bump when the audit format changes to invalidate all cached audit files. */
-	static constexpr int32 AuditSchemaVersion = 11;
+	static constexpr int32 AuditSchemaVersion = 12;
 
 	/** Human-readable type string for a Blueprint variable pin type. */
 	static FString GetVariableTypeString(const FEdGraphPinType& PinType);

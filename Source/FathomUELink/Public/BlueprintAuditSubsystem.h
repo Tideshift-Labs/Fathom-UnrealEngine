@@ -26,7 +26,8 @@ enum class EAuditAssetType : uint8
 	DataAsset,
 	UserDefinedStruct,
 	ControlRig,
-	Material
+	Material,
+	BehaviorTree
 };
 
 /** Per-entry data collected in Phase 1, consumed in Phase 2/3. */
@@ -86,6 +87,7 @@ private:
 	void DispatchBackgroundWrite(FUserDefinedStructAuditData&& Data);
 	void DispatchBackgroundWrite(FControlRigAuditData&& Data);
 	void DispatchBackgroundWrite(FMaterialAuditData&& Data);
+	void DispatchBackgroundWrite(FBehaviorTreeAuditData&& Data);
 
 	/** Remove completed futures from PendingFutures to prevent unbounded growth. */
 	void CleanupCompletedFutures();
