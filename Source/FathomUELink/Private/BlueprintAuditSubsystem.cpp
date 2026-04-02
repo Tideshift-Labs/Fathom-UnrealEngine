@@ -17,6 +17,7 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialInstance.h"
 #include "Materials/MaterialInstanceConstant.h"
+#include "BehaviorTree/BehaviorTree.h"
 #include "UObject/ObjectSaveContext.h"
 
 void UBlueprintAuditSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -208,6 +209,21 @@ void UBlueprintAuditSubsystem::OnPackageSaved(const FString& PackageFileName, UP
 			UE_LOG(LogFathomUELink, Verbose, TEXT("Fathom: Dispatching async audit for saved DataAsset %s"), *Data.Name);
 			DispatchBackgroundWrite(MoveTemp(Data));
 		}
+		else if (const UBehaviorTree* BT = Cast<UBehaviorTree>(Object))
+		{
+			FBehaviorTreeAuditData Data = FBehaviorTreeAuditor::GatherData(BT);
+
+			{
+				FScopeLock Lock(&InFlightLock);
+				if (InFlightPackages.Contains(Data.PackageName))
+				{
+					return true;
+				}
+			}
+
+			UE_LOG(LogFathomUELink, Verbose, TEXT("Fathom: Dispatching async audit for saved BehaviorTree %s"), *Data.Name);
+			DispatchBackgroundWrite(MoveTemp(Data));
+		}
 		else if (const UMaterialInterface* Mat = Cast<UMaterialInterface>(Object))
 		{
 			FMaterialAuditData Data = FMaterialAuditor::GatherData(Mat);
@@ -239,7 +255,8 @@ void UBlueprintAuditSubsystem::OnAssetRemoved(const FAssetData& AssetData)
 		AssetData.IsInstanceOf(UDataTable::StaticClass()) ||
 		AssetData.IsInstanceOf(UUserDefinedStruct::StaticClass()) ||
 		AssetData.IsInstanceOf(UDataAsset::StaticClass()) ||
-		AssetData.IsInstanceOf(UMaterialInterface::StaticClass()))
+		AssetData.IsInstanceOf(UMaterialInterface::StaticClass()) ||
+		AssetData.IsInstanceOf(UBehaviorTree::StaticClass()))
 	{
 		FBlueprintAuditor::DeleteAuditFile(FBlueprintAuditor::GetAuditOutputPath(PackageName));
 	}
@@ -257,7 +274,8 @@ void UBlueprintAuditSubsystem::OnAssetRenamed(const FAssetData& AssetData, const
 		AssetData.IsInstanceOf(UDataTable::StaticClass()) ||
 		AssetData.IsInstanceOf(UUserDefinedStruct::StaticClass()) ||
 		AssetData.IsInstanceOf(UDataAsset::StaticClass()) ||
-		AssetData.IsInstanceOf(UMaterialInterface::StaticClass()))
+		AssetData.IsInstanceOf(UMaterialInterface::StaticClass()) ||
+		AssetData.IsInstanceOf(UBehaviorTree::StaticClass()))
 	{
 		FBlueprintAuditor::DeleteAuditFile(FBlueprintAuditor::GetAuditOutputPath(OldPackageName));
 	}
@@ -422,6 +440,28 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 				Entry.SourcePath = FBlueprintAuditor::GetSourceFilePath(PackageName);
 				Entry.AuditPath = FBlueprintAuditor::GetAuditOutputPath(PackageName);
 				Entry.AssetType = EAuditAssetType::Material;
+				StaleCheckEntries.Add(MoveTemp(Entry));
+			}
+		}
+
+		// BehaviorTrees
+		{
+			TArray<FAssetData> AllBTs;
+			AssetRegistry.GetAssetsByClass(UBehaviorTree::StaticClass()->GetClassPathName(), AllBTs, false);
+
+			for (const FAssetData& Asset : AllBTs)
+			{
+				const FString PackageName = Asset.PackageName.ToString();
+				if (!PackageName.StartsWith(TEXT("/Game/")))
+				{
+					continue;
+				}
+
+				FStaleCheckEntry Entry;
+				Entry.PackageName = PackageName;
+				Entry.SourcePath = FBlueprintAuditor::GetSourceFilePath(PackageName);
+				Entry.AuditPath = FBlueprintAuditor::GetAuditOutputPath(PackageName);
+				Entry.AssetType = EAuditAssetType::BehaviorTree;
 				StaleCheckEntries.Add(MoveTemp(Entry));
 			}
 		}
@@ -591,6 +631,20 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 					break;
 				}
 				FMaterialAuditData Data = FMaterialAuditor::GatherData(Mat);
+				DispatchBackgroundWrite(MoveTemp(Data));
+				++StaleReAuditedCount;
+				break;
+			}
+			case EAuditAssetType::BehaviorTree:
+			{
+				UBehaviorTree* BT = LoadObject<UBehaviorTree>(nullptr, *AssetPath);
+				if (!BT)
+				{
+					++StaleFailedCount;
+					UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load BehaviorTree %s for re-audit"), *PackageName);
+					break;
+				}
+				FBehaviorTreeAuditData Data = FBehaviorTreeAuditor::GatherData(BT);
 				DispatchBackgroundWrite(MoveTemp(Data));
 				++StaleReAuditedCount;
 				break;
@@ -782,6 +836,31 @@ void UBlueprintAuditSubsystem::DispatchBackgroundWrite(FMaterialAuditData&& Data
 		[this, MovedData = MoveTemp(Data), PackageName, OutputPath]()
 		{
 			const FString Markdown = FMaterialAuditor::SerializeToMarkdown(MovedData);
+			FBlueprintAuditor::WriteAuditFile(Markdown, OutputPath);
+
+			FScopeLock Lock(&InFlightLock);
+			InFlightPackages.Remove(PackageName);
+		});
+
+	PendingFutures.Add(MoveTemp(Future));
+}
+
+void UBlueprintAuditSubsystem::DispatchBackgroundWrite(FBehaviorTreeAuditData&& Data)
+{
+	const FString PackageName = Data.PackageName;
+	const FString OutputPath = Data.OutputPath;
+
+	{
+		FScopeLock Lock(&InFlightLock);
+		InFlightPackages.Add(PackageName);
+	}
+
+	CleanupCompletedFutures();
+
+	TFuture<void> Future = Async(EAsyncExecution::ThreadPool,
+		[this, MovedData = MoveTemp(Data), PackageName, OutputPath]()
+		{
+			const FString Markdown = FBehaviorTreeAuditor::SerializeToMarkdown(MovedData);
 			FBlueprintAuditor::WriteAuditFile(Markdown, OutputPath);
 
 			FScopeLock Lock(&InFlightLock);

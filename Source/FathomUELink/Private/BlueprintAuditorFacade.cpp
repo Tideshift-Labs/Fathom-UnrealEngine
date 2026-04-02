@@ -97,6 +97,18 @@ FString FBlueprintAuditor::SerializeMaterialToMarkdown(const FMaterialAuditData&
 	return FMaterialAuditor::SerializeToMarkdown(Data);
 }
 
+// --- BehaviorTree ---
+
+FBehaviorTreeAuditData FBlueprintAuditor::GatherBehaviorTreeData(const UBehaviorTree* BT)
+{
+	return FBehaviorTreeAuditor::GatherData(BT);
+}
+
+FString FBlueprintAuditor::SerializeBehaviorTreeToMarkdown(const FBehaviorTreeAuditData& Data)
+{
+	return FBehaviorTreeAuditor::SerializeToMarkdown(Data);
+}
+
 // --- Legacy synchronous API ---
 
 FString FBlueprintAuditor::AuditBlueprint(const UBlueprint* BP)

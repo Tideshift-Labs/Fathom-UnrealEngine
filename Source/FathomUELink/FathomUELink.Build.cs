@@ -17,6 +17,7 @@ public class FathomUELink : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
+			"AIModule",
 			"AssetRegistry",
 			"BlueprintGraph",
 			"ControlRig",

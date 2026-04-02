@@ -12,6 +12,7 @@
 #include "Audit/MaterialAuditor.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceConstant.h"
+#include "BehaviorTree/BehaviorTree.h"
 #include "Misc/FileHelper.h"
 
 UBlueprintAuditCommandlet::UBlueprintAuditCommandlet()
@@ -337,6 +338,48 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 
 			FMaterialAuditData Data = FMaterialAuditor::GatherData(MI);
 			const FString Markdown = FMaterialAuditor::SerializeToMarkdown(Data);
+			if (FBlueprintAuditor::WriteAuditFile(Markdown, Data.OutputPath))
+			{
+				++SuccessCount;
+			}
+			else
+			{
+				++FailCount;
+			}
+
+			if (++AssetsSinceGC >= GCInterval)
+			{
+				CollectGarbage(RF_NoFlags);
+				AssetsSinceGC = 0;
+			}
+		}
+	}
+
+	// BehaviorTree batch
+	{
+		TArray<FAssetData> AllBTs;
+		AssetRegistry.GetAssetsByClass(UBehaviorTree::StaticClass()->GetClassPathName(), AllBTs, false);
+
+		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Auditing %d BehaviorTree(s)..."), AllBTs.Num());
+
+		for (const FAssetData& Asset : AllBTs)
+		{
+			if (!Asset.PackageName.ToString().StartsWith(TEXT("/Game/")))
+			{
+				++SkipCount;
+				continue;
+			}
+
+			const UBehaviorTree* BT = Cast<UBehaviorTree>(Asset.GetAsset());
+			if (!BT)
+			{
+				++FailCount;
+				UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load BehaviorTree %s"), *Asset.PackageName.ToString());
+				continue;
+			}
+
+			FBehaviorTreeAuditData Data = FBehaviorTreeAuditor::GatherData(BT);
+			const FString Markdown = FBehaviorTreeAuditor::SerializeToMarkdown(Data);
 			if (FBlueprintAuditor::WriteAuditFile(Markdown, Data.OutputPath))
 			{
 				++SuccessCount;

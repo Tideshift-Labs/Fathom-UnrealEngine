@@ -9,7 +9,9 @@
 #include "Audit/UserDefinedStructAuditor.h"
 #include "Audit/ControlRigAuditor.h"
 #include "Audit/MaterialAuditor.h"
+#include "Audit/BehaviorTreeAuditor.h"
 
+class UBehaviorTree;
 class UBlueprint;
 class UControlRigBlueprint;
 class UDataAsset;
@@ -93,6 +95,14 @@ struct FATHOMUELINK_API FBlueprintAuditor
 
 	/** Serialize gathered Material data to Markdown. Computes SourceFileHash from SourceFilePath. Safe on any thread. */
 	static FString SerializeMaterialToMarkdown(const FMaterialAuditData& Data);
+
+	// --- BehaviorTree gather + serialize ---
+
+	/** Gather all audit data from a BehaviorTree into a POD struct. Must be called on the game thread. */
+	static FBehaviorTreeAuditData GatherBehaviorTreeData(const UBehaviorTree* BT);
+
+	/** Serialize gathered BehaviorTree data to Markdown. Computes SourceFileHash from SourceFilePath. Safe on any thread. */
+	static FString SerializeBehaviorTreeToMarkdown(const FBehaviorTreeAuditData& Data);
 
 	// --- Legacy synchronous API (used by Commandlet and as a convenience wrapper) ---
 

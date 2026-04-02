@@ -310,3 +310,53 @@ struct FMaterialAuditData
 	TArray<FMaterialEdgeData> Edges;
 	TArray<FMaterialOutputConnection> OutputConnections;
 };
+
+// --- BehaviorTree audit data ---
+
+struct FBTDecoratorAuditData
+{
+	FString ClassName;
+	FString AbortMode;         // "None", "Self", "LowerPriority", "Both"
+	bool bInversed = false;
+	TArray<FPropertyOverrideData> Properties;  // all edit-visible properties
+};
+
+struct FBTServiceAuditData
+{
+	FString ClassName;
+	float Interval = 0.5f;
+	float RandomDeviation = 0.f;
+	TArray<FPropertyOverrideData> Properties;  // all edit-visible properties
+};
+
+struct FBTNodeAuditData
+{
+	FString Type;              // "Selector", "Sequence", "SimpleParallel", "Task"
+	FString ClassName;
+	FString DecoratorLogic;    // combined decorator expression e.g. "(A) AND (B)"
+	TArray<FPropertyOverrideData> Properties;  // all edit-visible properties
+	TArray<FBTDecoratorAuditData> Decorators;
+	TArray<FBTServiceAuditData> Services;
+	TArray<FBTNodeAuditData> Children;  // recursive
+	FString FinishMode;        // SimpleParallel only: "AbortBackground" or "WaitForBackground"
+};
+
+struct FBlackboardKeyAuditData
+{
+	FString Name;
+	FString Type;              // "Bool", "Float", "Object (AActor)", "Enum (EAIState)"
+	bool bInherited = false;
+};
+
+struct FBehaviorTreeAuditData
+{
+	FString Name;
+	FString Path;
+	FString PackageName;
+	FString SourceFilePath;
+	FString OutputPath;
+	FString BlackboardAssetName;
+	FString BlackboardAssetPath;
+	TArray<FBlackboardKeyAuditData> BlackboardKeys;
+	FBTNodeAuditData RootNode;
+};
