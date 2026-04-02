@@ -18,6 +18,7 @@
 #include "Materials/MaterialInstance.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "BehaviorTree/BehaviorTree.h"
+#include "Audit/AuditExtensionRegistry.h"
 #include "UObject/ObjectSaveContext.h"
 
 void UBlueprintAuditSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -194,21 +195,6 @@ void UBlueprintAuditSubsystem::OnPackageSaved(const FString& PackageFileName, UP
 			UE_LOG(LogFathomUELink, Verbose, TEXT("Fathom: Dispatching async audit for saved UserDefinedStruct %s"), *Data.Name);
 			DispatchBackgroundWrite(MoveTemp(Data));
 		}
-		else if (const UDataAsset* DA = Cast<UDataAsset>(Object))
-		{
-			FDataAssetAuditData Data = FBlueprintAuditor::GatherDataAssetData(DA);
-
-			{
-				FScopeLock Lock(&InFlightLock);
-				if (InFlightPackages.Contains(Data.PackageName))
-				{
-					return true;
-				}
-			}
-
-			UE_LOG(LogFathomUELink, Verbose, TEXT("Fathom: Dispatching async audit for saved DataAsset %s"), *Data.Name);
-			DispatchBackgroundWrite(MoveTemp(Data));
-		}
 		else if (const UBehaviorTree* BT = Cast<UBehaviorTree>(Object))
 		{
 			FBehaviorTreeAuditData Data = FBehaviorTreeAuditor::GatherData(BT);
@@ -239,6 +225,55 @@ void UBlueprintAuditSubsystem::OnPackageSaved(const FString& PackageFileName, UP
 			UE_LOG(LogFathomUELink, Verbose, TEXT("Fathom: Dispatching async audit for saved Material %s"), *Data.Name);
 			DispatchBackgroundWrite(MoveTemp(Data));
 		}
+		else
+		{
+			// Try registered extension auditors first (e.g. StateTree, which inherits UDataAsset)
+			bool bHandledByExtension = false;
+			for (const auto& Ext : FAuditExtensionRegistry::Get().GetExtensions())
+			{
+				if (Ext.TryAuditSavedObject)
+				{
+					TOptional<FAuditWriteTask> Task = Ext.TryAuditSavedObject(Object);
+					if (Task.IsSet())
+					{
+						{
+							FScopeLock Lock(&InFlightLock);
+							if (InFlightPackages.Contains(Task->PackageName))
+							{
+								bHandledByExtension = true;
+								break;
+							}
+						}
+
+						UE_LOG(LogFathomUELink, Verbose, TEXT("Fathom: Dispatching async audit for saved %s asset %s"),
+							*Ext.Name.ToString(), *Task->PackageName);
+						DispatchBackgroundWriteTask(MoveTemp(*Task));
+						bHandledByExtension = true;
+						break;
+					}
+				}
+			}
+
+			// Fall back to generic DataAsset auditor
+			if (!bHandledByExtension)
+			{
+				if (const UDataAsset* DA = Cast<UDataAsset>(Object))
+				{
+					FDataAssetAuditData Data = FBlueprintAuditor::GatherDataAssetData(DA);
+
+					{
+						FScopeLock Lock(&InFlightLock);
+						if (InFlightPackages.Contains(Data.PackageName))
+						{
+							return true;
+						}
+					}
+
+					UE_LOG(LogFathomUELink, Verbose, TEXT("Fathom: Dispatching async audit for saved DataAsset %s"), *Data.Name);
+					DispatchBackgroundWrite(MoveTemp(Data));
+				}
+			}
+		}
 		return true; // continue iteration
 	});
 }
@@ -251,12 +286,26 @@ void UBlueprintAuditSubsystem::OnAssetRemoved(const FAssetData& AssetData)
 		return;
 	}
 
-	if (AssetData.IsInstanceOf(UBlueprint::StaticClass()) ||
+	bool bHandled = AssetData.IsInstanceOf(UBlueprint::StaticClass()) ||
 		AssetData.IsInstanceOf(UDataTable::StaticClass()) ||
 		AssetData.IsInstanceOf(UUserDefinedStruct::StaticClass()) ||
 		AssetData.IsInstanceOf(UDataAsset::StaticClass()) ||
 		AssetData.IsInstanceOf(UMaterialInterface::StaticClass()) ||
-		AssetData.IsInstanceOf(UBehaviorTree::StaticClass()))
+		AssetData.IsInstanceOf(UBehaviorTree::StaticClass());
+
+	if (!bHandled)
+	{
+		for (const auto& Ext : FAuditExtensionRegistry::Get().GetExtensions())
+		{
+			if (Ext.IsHandledAsset && Ext.IsHandledAsset(AssetData))
+			{
+				bHandled = true;
+				break;
+			}
+		}
+	}
+
+	if (bHandled)
 	{
 		FBlueprintAuditor::DeleteAuditFile(FBlueprintAuditor::GetAuditOutputPath(PackageName));
 	}
@@ -270,12 +319,26 @@ void UBlueprintAuditSubsystem::OnAssetRenamed(const FAssetData& AssetData, const
 		return;
 	}
 
-	if (AssetData.IsInstanceOf(UBlueprint::StaticClass()) ||
+	bool bHandled = AssetData.IsInstanceOf(UBlueprint::StaticClass()) ||
 		AssetData.IsInstanceOf(UDataTable::StaticClass()) ||
 		AssetData.IsInstanceOf(UUserDefinedStruct::StaticClass()) ||
 		AssetData.IsInstanceOf(UDataAsset::StaticClass()) ||
 		AssetData.IsInstanceOf(UMaterialInterface::StaticClass()) ||
-		AssetData.IsInstanceOf(UBehaviorTree::StaticClass()))
+		AssetData.IsInstanceOf(UBehaviorTree::StaticClass());
+
+	if (!bHandled)
+	{
+		for (const auto& Ext : FAuditExtensionRegistry::Get().GetExtensions())
+		{
+			if (Ext.IsHandledAsset && Ext.IsHandledAsset(AssetData))
+			{
+				bHandled = true;
+				break;
+			}
+		}
+	}
+
+	if (bHandled)
 	{
 		FBlueprintAuditor::DeleteAuditFile(FBlueprintAuditor::GetAuditOutputPath(OldPackageName));
 	}
@@ -361,10 +424,27 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 			TArray<FAssetData> AllDataAssets;
 			AssetRegistry.GetAssetsByClass(UDataAsset::StaticClass()->GetClassPathName(), AllDataAssets, true);
 
+			const auto& Extensions = FAuditExtensionRegistry::Get().GetExtensions();
+
 			for (const FAssetData& Asset : AllDataAssets)
 			{
 				const FString PackageName = Asset.PackageName.ToString();
 				if (!PackageName.StartsWith(TEXT("/Game/")))
+				{
+					continue;
+				}
+
+				// Skip assets handled by extension auditors (e.g. StateTree inherits UDataAsset)
+				bool bHandledByExtension = false;
+				for (const auto& Ext : Extensions)
+				{
+					if (Ext.IsHandledAsset && Ext.IsHandledAsset(Asset))
+					{
+						bHandledByExtension = true;
+						break;
+					}
+				}
+				if (bHandledByExtension)
 				{
 					continue;
 				}
@@ -463,6 +543,15 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 				Entry.AuditPath = FBlueprintAuditor::GetAuditOutputPath(PackageName);
 				Entry.AssetType = EAuditAssetType::BehaviorTree;
 				StaleCheckEntries.Add(MoveTemp(Entry));
+			}
+		}
+
+		// Extension auditors (e.g. StateTree)
+		for (const auto& Ext : FAuditExtensionRegistry::Get().GetExtensions())
+		{
+			if (Ext.BuildStaleCheckList)
+			{
+				Ext.BuildStaleCheckList(AssetRegistry, StaleCheckEntries);
 			}
 		}
 
@@ -647,6 +736,31 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 				FBehaviorTreeAuditData Data = FBehaviorTreeAuditor::GatherData(BT);
 				DispatchBackgroundWrite(MoveTemp(Data));
 				++StaleReAuditedCount;
+				break;
+			}
+			default:
+			{
+				bool bHandledByExtension = false;
+				for (const auto& Ext : FAuditExtensionRegistry::Get().GetExtensions())
+				{
+					if (Ext.ReAuditStaleEntry)
+					{
+						TOptional<FAuditWriteTask> Task = Ext.ReAuditStaleEntry(StaleEntry);
+						if (Task.IsSet())
+						{
+							DispatchBackgroundWriteTask(MoveTemp(*Task));
+							++StaleReAuditedCount;
+							bHandledByExtension = true;
+							break;
+						}
+					}
+				}
+				if (!bHandledByExtension)
+				{
+					++StaleFailedCount;
+					UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: No handler for stale asset %s (type %d)"),
+						*PackageName, static_cast<int32>(StaleEntry.AssetType));
+				}
 				break;
 			}
 			}
@@ -862,6 +976,34 @@ void UBlueprintAuditSubsystem::DispatchBackgroundWrite(FBehaviorTreeAuditData&& 
 		{
 			const FString Markdown = FBehaviorTreeAuditor::SerializeToMarkdown(MovedData);
 			FBlueprintAuditor::WriteAuditFile(Markdown, OutputPath);
+
+			FScopeLock Lock(&InFlightLock);
+			InFlightPackages.Remove(PackageName);
+		});
+
+	PendingFutures.Add(MoveTemp(Future));
+}
+
+void UBlueprintAuditSubsystem::DispatchBackgroundWriteTask(FAuditWriteTask&& Task)
+{
+	if (!Task.Execute)
+	{
+		return;
+	}
+
+	const FString PackageName = Task.PackageName;
+
+	{
+		FScopeLock Lock(&InFlightLock);
+		InFlightPackages.Add(PackageName);
+	}
+
+	CleanupCompletedFutures();
+
+	TFuture<void> Future = Async(EAsyncExecution::ThreadPool,
+		[this, MovedTask = MoveTemp(Task), PackageName]()
+		{
+			MovedTask.Execute();
 
 			FScopeLock Lock(&InFlightLock);
 			InFlightPackages.Remove(PackageName);
