@@ -5,6 +5,7 @@
 #include "Containers/Ticker.h"
 #include "EditorSubsystem.h"
 #include "BlueprintAuditor.h"
+#include "Audit/AuditExtensionRegistry.h"
 #include "BlueprintAuditSubsystem.generated.h"
 
 /** State machine phases for the startup stale check. */
@@ -27,7 +28,8 @@ enum class EAuditAssetType : uint8
 	UserDefinedStruct,
 	ControlRig,
 	Material,
-	BehaviorTree
+	BehaviorTree,
+	StateTree
 };
 
 /** Per-entry data collected in Phase 1, consumed in Phase 2/3. */
@@ -88,6 +90,9 @@ private:
 	void DispatchBackgroundWrite(FControlRigAuditData&& Data);
 	void DispatchBackgroundWrite(FMaterialAuditData&& Data);
 	void DispatchBackgroundWrite(FBehaviorTreeAuditData&& Data);
+
+	/** Dispatch a generic write task from an extension auditor. */
+	void DispatchBackgroundWriteTask(FAuditWriteTask&& Task);
 
 	/** Remove completed futures from PendingFutures to prevent unbounded growth. */
 	void CleanupCompletedFutures();

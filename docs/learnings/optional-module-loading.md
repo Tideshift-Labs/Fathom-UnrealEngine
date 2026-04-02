@@ -113,6 +113,30 @@ void FFathomUELinkModule::StartupModule()
 | Code complexity | Normal UE code | Reflection boilerplate |
 | Graceful degradation | Module simply doesn't load | Manual `IsAvailable()` checks |
 
+## Verified: Build-Time Behavior
+
+A concern was raised that UBT might fail to compile the optional module when the dependent plugin (StateTree) is not enabled for the current project. We tested this directly:
+
+- **Project without StateTree**: UBT successfully compiled `FathomUELinkStateTree` because StateTree modules are pre-built as part of the engine installation, regardless of whether a specific project enables the plugin. `LoadingPhase: None` prevents runtime auto-loading, while UBT can still link against the engine's pre-compiled DLLs.
+- **Project with StateTree**: Build succeeds, module dynamically loaded at runtime, auditor registers and works.
+
+Key insight: `LoadingPhase: None` is a **runtime** control, not a **build-time** control. UBT compiles all modules in the `.uplugin` unconditionally. The engine's pre-built plugin DLLs are always available for linking.
+
+## Important: Delegate Cleanup
+
+The `OnModulesChanged` delegate captures `this`. Always store the handle and remove it in `ShutdownModule()` to avoid dangling pointers:
+
+```cpp
+// StartupModule
+OnModulesChangedHandle = FModuleManager::Get().OnModulesChanged().AddLambda(...);
+
+// ShutdownModule
+if (OnModulesChangedHandle.IsValid())
+{
+    FModuleManager::Get().OnModulesChanged().Remove(OnModulesChangedHandle);
+}
+```
+
 ## Source
 
 Pattern shared via Discord, based on production usage with Niagara as an optional dependency. This is a well-established UE community pattern.

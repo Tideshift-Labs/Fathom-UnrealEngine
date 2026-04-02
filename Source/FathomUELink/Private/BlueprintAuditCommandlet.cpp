@@ -13,6 +13,7 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "BehaviorTree/BehaviorTree.h"
+#include "Audit/AuditExtensionRegistry.h"
 #include "Misc/FileHelper.h"
 
 UBlueprintAuditCommandlet::UBlueprintAuditCommandlet()
@@ -194,11 +195,28 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 
 		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Auditing %d DataAsset(s)..."), AllDataAssets.Num());
 
+		const auto& Extensions = FAuditExtensionRegistry::Get().GetExtensions();
+
 		for (const FAssetData& Asset : AllDataAssets)
 		{
 			if (!Asset.PackageName.ToString().StartsWith(TEXT("/Game/")))
 			{
 				++SkipCount;
+				continue;
+			}
+
+			// Skip assets handled by extension auditors (e.g. StateTree inherits UDataAsset)
+			bool bHandledByExtension = false;
+			for (const auto& Ext : Extensions)
+			{
+				if (Ext.IsHandledAsset && Ext.IsHandledAsset(Asset))
+				{
+					bHandledByExtension = true;
+					break;
+				}
+			}
+			if (bHandledByExtension)
+			{
 				continue;
 			}
 
@@ -394,6 +412,15 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 				CollectGarbage(RF_NoFlags);
 				AssetsSinceGC = 0;
 			}
+		}
+	}
+
+	// Extension auditors (e.g. StateTree)
+	for (const auto& Ext : FAuditExtensionRegistry::Get().GetExtensions())
+	{
+		if (Ext.BatchAudit)
+		{
+			Ext.BatchAudit(AssetRegistry, SuccessCount, FailCount, SkipCount);
 		}
 	}
 
