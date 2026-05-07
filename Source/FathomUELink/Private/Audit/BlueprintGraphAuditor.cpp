@@ -358,17 +358,21 @@ FGraphAuditData FBlueprintGraphAuditor::GatherGraphData(const UEdGraph* Graph)
 			NodeData.Type = TEXT("FunctionResult");
 			NodeData.Name = TEXT("Return");
 
-			// Extract function output parameters from the result node's input pins
-			for (const UEdGraphPin* Pin : Node->Pins)
+			// All FunctionResult nodes in a graph share the same signature, so only
+			// collect outputs from the first one to avoid duplicating return params.
+			if (Data.Outputs.Num() == 0)
 			{
-				if (Pin->Direction != EGPD_Input) continue;
-				if (Pin->bHidden) continue;
-				if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
+				for (const UEdGraphPin* Pin : Node->Pins)
+				{
+					if (Pin->Direction != EGPD_Input) continue;
+					if (Pin->bHidden) continue;
+					if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
 
-				FGraphParamData Param;
-				Param.Name = Pin->PinName.ToString();
-				Param.Type = FAuditFileUtils::GetVariableTypeString(Pin->PinType);
-				Data.Outputs.Add(MoveTemp(Param));
+					FGraphParamData Param;
+					Param.Name = Pin->PinName.ToString();
+					Param.Type = FAuditFileUtils::GetVariableTypeString(Pin->PinType);
+					Data.Outputs.Add(MoveTemp(Param));
+				}
 			}
 		}
 		else if (const UK2Node_CustomEvent* CustomEvent = Cast<UK2Node_CustomEvent>(Node))
