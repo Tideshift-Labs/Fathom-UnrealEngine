@@ -36,18 +36,18 @@ namespace
 				continue;
 			}
 
-			FString Value;
-			Prop->ExportText_InContainer(0, Value, Object, nullptr, nullptr, 0);
+			const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Object);
+			FString Value = FathomAuditHelpers::FormatPropertyValue(Prop, ValuePtr, /*IndentDepth=*/0);
 
 			// Skip empty values
-			if (Value.IsEmpty())
+			if (Value.IsEmpty() || Value == TEXT("()") || Value == TEXT("None"))
 			{
 				continue;
 			}
 
 			FPropertyOverrideData Entry;
 			Entry.Name = Prop->GetName();
-			Entry.Value = FathomAuditHelpers::CleanExportedValue(Value);
+			Entry.Value = MoveTemp(Value);
 			OutProperties.Add(MoveTemp(Entry));
 		}
 	}
@@ -397,10 +397,11 @@ FString FMaterialAuditor::SerializeToMarkdown(const FMaterialAuditData& Data)
 	if (Data.Properties.Num() > 0)
 	{
 		Result += TEXT("\n## Properties\n");
-		for (const FPropertyOverrideData& Prop : Data.Properties)
-		{
-			Result += FString::Printf(TEXT("- %s = %s\n"), *Prop.Name, *Prop.Value);
-		}
+		FathomAuditHelpers::FPropertyRenderStyle Style;
+		Style.Indent = TEXT("");
+		Style.bUseBullet = true;
+		Style.InlineSeparator = TEXT(" = ");
+		FathomAuditHelpers::SerializePropertyOverridesToMarkdown(Result, Data.Properties, Style);
 	}
 
 	// Scalar Parameters

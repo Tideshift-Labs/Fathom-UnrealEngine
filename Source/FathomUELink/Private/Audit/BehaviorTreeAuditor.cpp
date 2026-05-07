@@ -139,8 +139,8 @@ static TArray<FPropertyOverrideData> GatherNodeProperties(const UBTNode* Node, c
 
 		FPropertyOverrideData Override;
 		Override.Name = Prop->GetAuthoredName();
-		Prop->ExportText_InContainer(0, Override.Value, Node, nullptr, nullptr, PPF_None);
-		Override.Value = FathomAuditHelpers::CleanExportedValue(Override.Value);
+		const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Node);
+		Override.Value = FathomAuditHelpers::FormatPropertyValue(Prop, ValuePtr, /*IndentDepth=*/0);
 
 		// Skip empty values
 		if (Override.Value.IsEmpty() || Override.Value == TEXT("()") || Override.Value == TEXT("None"))
@@ -398,10 +398,11 @@ FBehaviorTreeAuditData FBehaviorTreeAuditor::GatherData(const UBehaviorTree* BT)
 
 static void SerializePropertiesToMarkdown(FString& Result, const TArray<FPropertyOverrideData>& Properties, const FString& Indent)
 {
-	for (const auto& Prop : Properties)
-	{
-		Result += FString::Printf(TEXT("%s%s: %s\n"), *Indent, *Prop.Name, *Prop.Value);
-	}
+	FathomAuditHelpers::FPropertyRenderStyle Style;
+	Style.Indent = Indent;
+	Style.bUseBullet = false;
+	Style.InlineSeparator = TEXT(": ");
+	FathomAuditHelpers::SerializePropertyOverridesToMarkdown(Result, Properties, Style);
 }
 
 static void SerializeServicesToMarkdown(FString& Result, const TArray<FBTServiceAuditData>& Services, const FString& Indent)

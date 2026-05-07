@@ -7,6 +7,7 @@
 #include "StateTreeTypes.h"
 #include "StateTreeTasksStatus.h"
 #include "Audit/AuditFileUtils.h"
+#include "Audit/AuditHelpers.h"
 #include "FathomUELinkModule.h"
 #include "PropertyBindingPath.h"
 #include "PropertyBindingBindingCollection.h"
@@ -215,10 +216,9 @@ static TArray<FPropertyOverrideData> GatherStructProperties(const FInstancedStru
 		if (SkipNames.Contains(Prop->GetName()))
 			continue;
 
-		FString Value;
-		Prop->ExportText_Direct(Value, StructMemory + Prop->GetOffset_ForInternal(), nullptr, nullptr, PPF_None);
+		const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(StructMemory);
+		FString Value = FathomAuditHelpers::FormatPropertyValue(Prop, ValuePtr, /*IndentDepth=*/0);
 		Value = ResolveEnumDisplayName(Prop, Value);
-		Value = CleanDecimalValue(Value);
 
 		if (Value.IsEmpty() || Value == TEXT("()") || Value == TEXT("None") || IsSentinelValue(Value))
 			continue;
@@ -267,10 +267,9 @@ static TArray<FPropertyOverrideData> GatherObjectProperties(const UObject* Objec
 		if (SkipNames.Contains(Prop->GetName()))
 			continue;
 
-		FString Value;
-		Prop->ExportText_InContainer(0, Value, Object, nullptr, nullptr, PPF_None);
+		const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Object);
+		FString Value = FathomAuditHelpers::FormatPropertyValue(Prop, ValuePtr, /*IndentDepth=*/0);
 		Value = ResolveEnumDisplayName(Prop, Value);
-		Value = CleanDecimalValue(Value);
 
 		if (Value.IsEmpty() || Value == TEXT("()") || Value == TEXT("None") || IsSentinelValue(Value))
 			continue;
@@ -563,10 +562,9 @@ static FStateTreeStateAuditData GatherStateData(
 						continue;
 					}
 
-					FString Value;
-					Prop->ExportText_Direct(Value, ParamMemory + Prop->GetOffset_ForInternal(), nullptr, nullptr, PPF_None);
+					const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(ParamMemory);
+					FString Value = FathomAuditHelpers::FormatPropertyValue(Prop, ValuePtr, /*IndentDepth=*/0);
 					Value = ResolveEnumDisplayName(Prop, Value);
-					Value = CleanDecimalValue(Value);
 
 					if (!Value.IsEmpty() && Value != TEXT("()") && Value != TEXT("None") && !IsSentinelValue(Value))
 					{
@@ -725,10 +723,11 @@ static void SerializeEditorNodes(FString& Out, const TArray<FStateTreeEditorNode
 
 		Out += FString::Printf(TEXT("%s- %s\n"), *Indent(Depth), *Label);
 
-		for (const FPropertyOverrideData& Prop : Node.Properties)
-		{
-			Out += FString::Printf(TEXT("%s  %s: %s\n"), *Indent(Depth), *Prop.Name, *Prop.Value);
-		}
+		FathomAuditHelpers::FPropertyRenderStyle PropStyle;
+		PropStyle.Indent = Indent(Depth) + TEXT("  ");
+		PropStyle.bUseBullet = false;
+		PropStyle.InlineSeparator = TEXT(": ");
+		FathomAuditHelpers::SerializePropertyOverridesToMarkdown(Out, Node.Properties, PropStyle);
 
 		for (const FStateTreePropertyBindingAuditData& Binding : Node.Bindings)
 		{
@@ -855,10 +854,11 @@ static void SerializeState(FString& Out, const FStateTreeStateAuditData& State, 
 	if (!State.ParameterOverrides.IsEmpty())
 	{
 		Out += TEXT("Parameter Overrides:\n");
-		for (const FPropertyOverrideData& Param : State.ParameterOverrides)
-		{
-			Out += FString::Printf(TEXT("  %s: %s\n"), *Param.Name, *Param.Value);
-		}
+		FathomAuditHelpers::FPropertyRenderStyle ParamStyle;
+		ParamStyle.Indent = TEXT("  ");
+		ParamStyle.bUseBullet = false;
+		ParamStyle.InlineSeparator = TEXT(": ");
+		FathomAuditHelpers::SerializePropertyOverridesToMarkdown(Out, State.ParameterOverrides, ParamStyle);
 	}
 
 	// Add blank line after metadata block if any metadata was written

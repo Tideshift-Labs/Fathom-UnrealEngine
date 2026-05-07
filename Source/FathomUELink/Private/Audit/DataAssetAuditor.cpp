@@ -48,7 +48,7 @@ FDataAssetAuditData FDataAssetAuditor::GatherData(const UDataAsset* Asset)
 			{
 				FPropertyOverrideData Override;
 				Override.Name = Prop->GetName();
-				Prop->ExportText_InContainer(0, Override.Value, Asset, nullptr, nullptr, 0);
+				Override.Value = FathomAuditHelpers::FormatPropertyValue(Prop, ValuePtr, /*IndentDepth=*/0);
 				Data.Properties.Add(MoveTemp(Override));
 			}
 		}
@@ -81,10 +81,11 @@ FString FDataAssetAuditor::SerializeToMarkdown(const FDataAssetAuditData& Data)
 	if (Data.Properties.Num() > 0)
 	{
 		Result += TEXT("\n## Properties\n");
-		for (const FPropertyOverrideData& Prop : Data.Properties)
-		{
-			Result += FString::Printf(TEXT("- %s = %s\n"), *Prop.Name, *FathomAuditHelpers::CleanExportedValue(Prop.Value));
-		}
+		FathomAuditHelpers::FPropertyRenderStyle Style;
+		Style.Indent = TEXT("");
+		Style.bUseBullet = true;
+		Style.InlineSeparator = TEXT(" = ");
+		FathomAuditHelpers::SerializePropertyOverridesToMarkdown(Result, Data.Properties, Style);
 	}
 
 	return Result;

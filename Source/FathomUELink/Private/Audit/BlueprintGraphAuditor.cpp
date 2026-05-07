@@ -175,7 +175,7 @@ FBlueprintAuditData FBlueprintGraphAuditor::GatherBlueprintData(const UBlueprint
 				{
 					FPropertyOverrideData Override;
 					Override.Name = Prop->GetName();
-					Prop->ExportText_InContainer(0, Override.Value, CDO, nullptr, nullptr, 0);
+					Override.Value = FathomAuditHelpers::FormatPropertyValue(Prop, ValuePtr, /*IndentDepth=*/0);
 					Data.PropertyOverrides.Add(MoveTemp(Override));
 				}
 			}
@@ -247,7 +247,7 @@ FBlueprintAuditData FBlueprintGraphAuditor::GatherBlueprintData(const UBlueprint
 					{
 						FPropertyOverrideData Override;
 						Override.Name = Prop->GetName();
-						Prop->ExportText_InContainer(0, Override.Value, Template, nullptr, nullptr, 0);
+						Override.Value = FathomAuditHelpers::FormatPropertyValue(Prop, ValuePtr, /*IndentDepth=*/0);
 						CompData.PropertyOverrides.Add(MoveTemp(Override));
 					}
 				}
@@ -654,10 +654,11 @@ FString FBlueprintGraphAuditor::SerializeToMarkdown(const FBlueprintAuditData& D
 	if (Data.PropertyOverrides.Num() > 0)
 	{
 		Result += TEXT("\n## Property Overrides\n");
-		for (const FPropertyOverrideData& Override : Data.PropertyOverrides)
-		{
-			Result += FString::Printf(TEXT("- %s = %s\n"), *Override.Name, *FathomAuditHelpers::CleanExportedValue(Override.Value));
-		}
+		FathomAuditHelpers::FPropertyRenderStyle Style;
+		Style.Indent = TEXT("");
+		Style.bUseBullet = true;
+		Style.InlineSeparator = TEXT(" = ");
+		FathomAuditHelpers::SerializePropertyOverridesToMarkdown(Result, Data.PropertyOverrides, Style);
 	}
 
 	// --- Interfaces ---
@@ -718,11 +719,11 @@ FString FBlueprintGraphAuditor::SerializeToMarkdown(const FBlueprintAuditData& D
 			if (Comp.PropertyOverrides.Num() == 0) continue;
 
 			Result += FString::Printf(TEXT("\n### %s (%s)\n"), *Comp.Name, *Comp.Class);
-			for (const FPropertyOverrideData& Override : Comp.PropertyOverrides)
-			{
-				Result += FString::Printf(TEXT("- %s = %s\n"),
-					*Override.Name, *FathomAuditHelpers::CleanExportedValue(Override.Value));
-			}
+			FathomAuditHelpers::FPropertyRenderStyle CompStyle;
+			CompStyle.Indent = TEXT("");
+			CompStyle.bUseBullet = true;
+			CompStyle.InlineSeparator = TEXT(" = ");
+			FathomAuditHelpers::SerializePropertyOverridesToMarkdown(Result, Comp.PropertyOverrides, CompStyle);
 		}
 	}
 

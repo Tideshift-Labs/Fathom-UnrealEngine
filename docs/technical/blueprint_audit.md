@@ -47,7 +47,7 @@ The audit system is split into domain-specific auditor structs, each covering on
 | `FMaterialAuditor` | Material, MaterialInstance | `Audit/MaterialAuditor.h/.cpp` |
 | `FAuditFileUtils` | Cross-cutting (paths, hashing, I/O) | `Audit/AuditFileUtils.h/.cpp` |
 
-All POD data structs live in `Audit/AuditTypes.h`. A shared `CleanExportedValue()` helper used by multiple auditors lives in `Private/Audit/AuditHelpers.h/.cpp` under the `FathomAuditHelpers` namespace.
+All POD data structs live in `Audit/AuditTypes.h`. Shared property formatters live in `Public/Audit/AuditHelpers.h` under the `FathomAuditHelpers` namespace: `CleanExportedValue` (NSLOCTEXT / decimal / default sub-struct cleanup), `FormatPropertyValue` (recursive structured serializer for arrays/sets/maps/structs/object-refs), `StripObjectPathToAssetName`, and `SerializePropertyOverridesToMarkdown` (shared renderer that handles inline vs multi-line values uniformly). Functions are `FATHOMUELINK_API`-exported so the optional `FathomUELinkStateTree` module can use them.
 
 `FBlueprintAuditor` (in `BlueprintAuditor.h`) is a thin facade that delegates every method to the corresponding domain auditor. It preserves backward compatibility so existing consumers (commandlet, subsystem, HTTP server) work without changes.
 

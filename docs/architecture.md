@@ -14,6 +14,7 @@ Fathom-UnrealEngine/
     │   └── Audit/
     │       ├── AuditTypes.h                     # All 23 POD audit data structs
     │       ├── AuditFileUtils.h                 # FAuditFileUtils: paths, hashing, file I/O
+    │       ├── AuditHelpers.h                   # FathomAuditHelpers: shared property formatters
     │       ├── BlueprintGraphAuditor.h          # FBlueprintGraphAuditor (Blueprint/Graph/Widget)
     │       ├── DataTableAuditor.h               # FDataTableAuditor
     │       ├── DataAssetAuditor.h               # FDataAssetAuditor
@@ -30,7 +31,7 @@ Fathom-UnrealEngine/
         ├── FathomHttpServerLiveCoding.cpp       # Live Coding handlers: status, compile
         ├── AssetRefSubsystem.cpp                # Subsystem lifecycle (start/stop server)
         └── Audit/
-            ├── AuditHelpers.h/.cpp              # FathomAuditHelpers::CleanExportedValue
+            ├── AuditHelpers.cpp                 # FathomAuditHelpers implementation
             ├── AuditFileUtils.cpp               # FAuditFileUtils implementation
             ├── BlueprintGraphAuditor.cpp        # Blueprint/Graph/Widget gather + serialize
             ├── DataTableAuditor.cpp             # DataTable gather + serialize
@@ -51,7 +52,7 @@ The audit system is split into domain-specific auditors under `Audit/`. Each aud
 - **`Audit/ControlRigAuditor.cpp`**: Extracts ControlRig RigVM graphs, nodes, pins, and edges.
 - **`Audit/MaterialAuditor.cpp`**: Extracts Material and MaterialInstance properties, parameters (scalar, vector, texture, static switch), and expression graph topology (nodes with pin defaults, edges, output connections).
 - **`Audit/AuditFileUtils.cpp`**: Cross-cutting utilities: paths, MD5 hashing, file I/O, schema version constant.
-- **`Audit/AuditHelpers.cpp`**: Internal `CleanExportedValue()` helper shared across auditors.
+- **`Audit/AuditHelpers.cpp`**: Shared property formatters used by every domain auditor. `CleanExportedValue()` does string-level cleanup (NSLOCTEXT, decimal trim, default sub-struct stripping). `FormatPropertyValue()` is a recursive structured serializer for `TArray`/`TSet`/`TMap`/`FStruct`/object-ref properties that produces indented Markdown sub-blocks instead of single-line `(...)` blobs. `StripObjectPathToAssetName()` reduces `/Script/Module.Class'/Path/Asset.Asset'` to the bare asset name. `SerializePropertyOverridesToMarkdown()` is the shared renderer that dispatches single-line vs multi-line output. Header is `Public/Audit/AuditHelpers.h` with `FATHOMUELINK_API` exports so the optional `FathomUELinkStateTree` module can link against it.
 - **`BlueprintAuditorFacade.cpp`**: Thin facade that delegates every `FBlueprintAuditor::` method to the corresponding domain auditor. Preserves backward compatibility for all existing consumers.
 - **`BlueprintAuditCommandlet.cpp`**: CLI entry point (`-run=BlueprintAudit`). Supports two modes: audit a single asset (`-AssetPath=...`) or audit every auditable Blueprint in the project (`/Game/` content plus project-type plugins, excluding `__ExternalActors__/__ExternalObjects__`). Designed for headless CI runs and for the Rider plugin to trigger remotely.
 - **`BlueprintAuditSubsystem.cpp`**: `UEditorSubsystem` that hooks `PackageSavedWithContextEvent` for automatic re-audit on save. Also runs a deferred stale check on editor startup.
