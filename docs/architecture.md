@@ -53,7 +53,7 @@ The audit system is split into domain-specific auditors under `Audit/`. Each aud
 - **`Audit/AuditFileUtils.cpp`**: Cross-cutting utilities: paths, MD5 hashing, file I/O, schema version constant.
 - **`Audit/AuditHelpers.cpp`**: Internal `CleanExportedValue()` helper shared across auditors.
 - **`BlueprintAuditorFacade.cpp`**: Thin facade that delegates every `FBlueprintAuditor::` method to the corresponding domain auditor. Preserves backward compatibility for all existing consumers.
-- **`BlueprintAuditCommandlet.cpp`**: CLI entry point (`-run=BlueprintAudit`). Supports two modes: audit a single asset (`-AssetPath=...`) or audit all `/Game/` Blueprints. Designed for headless CI runs and for the Rider plugin to trigger remotely.
+- **`BlueprintAuditCommandlet.cpp`**: CLI entry point (`-run=BlueprintAudit`). Supports two modes: audit a single asset (`-AssetPath=...`) or audit every auditable Blueprint in the project (`/Game/` content plus project-type plugins, excluding `__ExternalActors__/__ExternalObjects__`). Designed for headless CI runs and for the Rider plugin to trigger remotely.
 - **`BlueprintAuditSubsystem.cpp`**: `UEditorSubsystem` that hooks `PackageSavedWithContextEvent` for automatic re-audit on save. Also runs a deferred stale check on editor startup.
 - **`FathomHttpServer.cpp`** + **`FathomHttpServerAssetRef.cpp`** + **`FathomHttpServerLiveCoding.cpp`**: HTTP server (ports 19900-19910) using UE's `FHttpServerModule`. Split by feature: server infrastructure, asset ref handlers (search, show, dependencies, referencers), and Live Coding handlers (status, compile with log capture).
 - **`AssetRefSubsystem.cpp`**: `UEditorSubsystem` that owns the `FFathomHttpServer` lifecycle.

@@ -923,6 +923,10 @@ FString FStateTreeAuditor::SerializeToMarkdown(const FStateTreeAuditData& Data)
 	Out += FString::Printf(TEXT("Path: %s\n"), *Data.Path);
 	Out += TEXT("Type: StateTree\n");
 
+	if (!Data.SourceFilePath.IsEmpty())
+	{
+		Out += FString::Printf(TEXT("SourcePath: %s\n"), *FAuditFileUtils::ToProjectRelativeSourcePath(Data.SourceFilePath));
+	}
 	const FString Hash = FAuditFileUtils::ComputeFileHash(Data.SourceFilePath);
 	Out += FString::Printf(TEXT("Hash: %s\n"), *Hash);
 

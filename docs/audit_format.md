@@ -9,6 +9,7 @@ The audit output is Markdown, optimized for LLM consumption (more token-efficien
 Path: /Game/UI/WBP_MainMenu.WBP_MainMenu
 Parent: /Script/CommonUI.CommonActivatableWidget
 Type: Normal
+SourcePath: Content/UI/WBP_MainMenu.uasset
 Hash: fe020519d8ca4cf5b2e8690bd0bfabca
 
 ## Variables
@@ -66,7 +67,13 @@ Data: 0.Prefix->1.A, 2.PlayerName->1.B, 1.ReturnValue->3.ReturnValue
 
 ## Format Details
 
-**Header lines**: Name (H1 heading), Path, Parent, Type, Hash. Used for staleness detection and quick identification.
+**Header lines**: Name (H1 heading), Path, Parent, Type, SourcePath, Hash. Used for staleness detection and quick identification. `SourcePath` is the on-disk `.uasset` path relative to the project directory (or absolute if the asset lives outside the project), and is used by the consumer to compute the current MD5 for staleness comparison. Older audits without `SourcePath` fall back to deriving the path from the package name, which only handles `/Game/` content.
+
+**Auditable content roots**: `/Game/` (project content) and the mount points of project-type plugins (`EPluginType::Project`). Engine, Enterprise, External, and Mod plugins are skipped, as are level packages under `__ExternalActors__/` or `__ExternalObjects__/`.
+
+**Output directory layout** under `Saved/Fathom/Audit/v<N>/`:
+- `/Game/Foo/Bar` writes to `<base>/Foo/Bar.md`
+- `/MyPlugin/Foo/Bar` writes to `<base>/_Plugins/MyPlugin/Foo/Bar.md`
 
 **Node tables** use `| Id | Type | Name | Details |` columns. The Details column contains target class, flags (pure, latent, not-native), and hardcoded default input values.
 

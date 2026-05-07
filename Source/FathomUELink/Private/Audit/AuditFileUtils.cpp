@@ -3,11 +3,62 @@
 #include "FathomUELinkModule.h"
 #include "Engine/Blueprint.h"
 #include "EdGraph/EdGraphPin.h"
+#include "HAL/CriticalSection.h"
+#include "Interfaces/IPluginManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
+#include "Misc/PackagePath.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeLock.h"
 #include "Misc/SecureHash.h"
 #include "UObject/TopLevelAssetPath.h"
+
+namespace
+{
+	const FString GamePackageRoot = TEXT("/Game/");
+	const FString PluginsAuditPrefix = TEXT("_Plugins/");
+
+	FString ExtractMountName(const FString& PackageName)
+	{
+		// Package paths are /MountName/... ; pull out MountName.
+		if (!PackageName.StartsWith(TEXT("/")))
+		{
+			return FString();
+		}
+		const int32 NextSlash = PackageName.Find(TEXT("/"), ESearchCase::CaseSensitive, ESearchDir::FromStart, 1);
+		if (NextSlash <= 1)
+		{
+			return PackageName.Mid(1);
+		}
+		return PackageName.Mid(1, NextSlash - 1);
+	}
+
+	bool IsProjectPluginMountName(const FString& MountName)
+	{
+		// Cache results per mount name. Plugin enable/disable mid-session is rare;
+		// the editor restart that follows will rebuild the cache.
+		static FCriticalSection CacheLock;
+		static TMap<FString, bool> Cache;
+
+		{
+			FScopeLock Lock(&CacheLock);
+			if (const bool* Cached = Cache.Find(MountName))
+			{
+				return *Cached;
+			}
+		}
+
+		bool bIsProjectPlugin = false;
+		if (TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(MountName))
+		{
+			bIsProjectPlugin = Plugin->GetType() == EPluginType::Project;
+		}
+
+		FScopeLock Lock(&CacheLock);
+		Cache.Add(MountName, bIsProjectPlugin);
+		return bIsProjectPlugin;
+	}
+}
 
 FString FAuditFileUtils::GetVariableTypeString(const FEdGraphPinType& PinType)
 {
@@ -60,16 +111,82 @@ FString FAuditFileUtils::GetAuditBaseDir()
 
 FString FAuditFileUtils::GetAuditOutputPath(const FString& PackageName)
 {
-	// Convert package path like /Game/UI/Widgets/WBP_Foo to relative path UI/Widgets/WBP_Foo
-	FString RelativePath = PackageName;
-
-	const FString GamePrefix = TEXT("/Game/");
-	if (RelativePath.StartsWith(GamePrefix))
+	// /Game/Foo/Bar      -> <base>/Foo/Bar.md
+	// /MyPlugin/Foo/Bar  -> <base>/_Plugins/MyPlugin/Foo/Bar.md
+	if (PackageName.StartsWith(GamePackageRoot))
 	{
-		RelativePath.RightChopInline(GamePrefix.Len());
+		FString RelativePath = PackageName;
+		RelativePath.RightChopInline(GamePackageRoot.Len());
+		return GetAuditBaseDir() / RelativePath + TEXT(".md");
 	}
 
-	return GetAuditBaseDir() / RelativePath + TEXT(".md");
+	const FString MountName = ExtractMountName(PackageName);
+	if (!MountName.IsEmpty())
+	{
+		const FString MountPrefix = FString::Printf(TEXT("/%s/"), *MountName);
+		FString RelativePath = PackageName;
+		if (RelativePath.StartsWith(MountPrefix))
+		{
+			RelativePath.RightChopInline(MountPrefix.Len());
+		}
+		return GetAuditBaseDir() / PluginsAuditPrefix + MountName / RelativePath + TEXT(".md");
+	}
+
+	// Fallback: drop the leading slash and write under base.
+	FString Fallback = PackageName;
+	Fallback.RemoveFromStart(TEXT("/"));
+	return GetAuditBaseDir() / Fallback + TEXT(".md");
+}
+
+bool FAuditFileUtils::IsAuditablePackage(const FString& PackageName)
+{
+	// Exclude One-File-Per-Actor / external-object packages from any content root.
+	// These are level data (placed actors and their components), not first-class
+	// assets we want to audit, and they're often missing from disk during edits
+	// which produces noisy hash-failure warnings.
+	if (PackageName.Contains(FPackagePath::GetExternalActorsFolderName()) ||
+		PackageName.Contains(FPackagePath::GetExternalObjectsFolderName()))
+	{
+		return false;
+	}
+
+	if (PackageName.StartsWith(GamePackageRoot))
+	{
+		return true;
+	}
+
+	const FString MountName = ExtractMountName(PackageName);
+	if (MountName.IsEmpty() || MountName == TEXT("Game"))
+	{
+		return false;
+	}
+
+	return IsProjectPluginMountName(MountName);
+}
+
+FString FAuditFileUtils::PackageNameFromRelativeAuditPath(const FString& RelPath)
+{
+	if (RelPath.IsEmpty())
+	{
+		return FString();
+	}
+
+	if (RelPath.StartsWith(PluginsAuditPrefix))
+	{
+		FString Remainder = RelPath;
+		Remainder.RightChopInline(PluginsAuditPrefix.Len());
+		// Remainder is now <PluginName>/<rest>
+		int32 Slash = INDEX_NONE;
+		if (!Remainder.FindChar(TEXT('/'), Slash) || Slash <= 0)
+		{
+			return FString();
+		}
+		const FString PluginName = Remainder.Left(Slash);
+		const FString Rest = Remainder.Mid(Slash + 1);
+		return FString::Printf(TEXT("/%s/%s"), *PluginName, *Rest);
+	}
+
+	return TEXT("/Game/") + RelPath;
 }
 
 bool FAuditFileUtils::DeleteAuditFile(const FString& FilePath)
@@ -88,6 +205,31 @@ bool FAuditFileUtils::DeleteAuditFile(const FString& FilePath)
 
 	UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to delete audit file %s"), *FilePath);
 	return false;
+}
+
+FString FAuditFileUtils::ToProjectRelativeSourcePath(const FString& AbsPath)
+{
+	if (AbsPath.IsEmpty())
+	{
+		return FString();
+	}
+
+	FString Normalized = AbsPath;
+	FPaths::NormalizeFilename(Normalized);
+
+	FString ProjectDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+	FPaths::NormalizeDirectoryName(ProjectDir);
+	if (!ProjectDir.EndsWith(TEXT("/")))
+	{
+		ProjectDir += TEXT("/");
+	}
+
+	if (Normalized.StartsWith(ProjectDir, ESearchCase::IgnoreCase))
+	{
+		return Normalized.RightChop(ProjectDir.Len());
+	}
+
+	return Normalized;
 }
 
 FString FAuditFileUtils::GetSourceFilePath(const FString& PackageName)

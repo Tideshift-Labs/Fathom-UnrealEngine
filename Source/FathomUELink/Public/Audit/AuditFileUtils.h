@@ -22,16 +22,38 @@ struct FATHOMUELINK_API FAuditFileUtils
 
 	/**
 	 * Compute the on-disk output path for an asset's audit file.
-	 * e.g. /Game/UI/Widgets/WBP_Foo  ->  <ProjectDir>/Saved/Fathom/Audit/v<N>/UI/Widgets/WBP_Foo.md
+	 *  /Game/UI/Widgets/WBP_Foo  ->  <ProjectDir>/Saved/Fathom/Audit/v<N>/UI/Widgets/WBP_Foo.md
+	 *  /MyPlugin/Foo/Bar         ->  <ProjectDir>/Saved/Fathom/Audit/v<N>/_Plugins/MyPlugin/Foo/Bar.md
 	 */
 	static FString GetAuditOutputPath(const UBlueprint* BP);
 	static FString GetAuditOutputPath(const FString& PackageName);
+
+	/**
+	 * Returns true if the package belongs to a content root we want to audit:
+	 * the project's /Game/ root, or the mount point of an enabled project-type plugin.
+	 * Engine, Enterprise, External, and Mod plugins are excluded.
+	 */
+	static bool IsAuditablePackage(const FString& PackageName);
+
+	/**
+	 * Reverse of the path mapping in GetAuditOutputPath: given an audit-file path
+	 * relative to GetAuditBaseDir() (forward-slash, no .md suffix), return the
+	 * corresponding package name. Returns empty on failure.
+	 */
+	static FString PackageNameFromRelativeAuditPath(const FString& RelPath);
 
 	/** Delete an audit file. Returns true if the file was deleted or did not exist. */
 	static bool DeleteAuditFile(const FString& FilePath);
 
 	/** Convert a package name (e.g. /Game/UI/WBP_Foo) to its .uasset file path on disk. */
 	static FString GetSourceFilePath(const FString& PackageName);
+
+	/**
+	 * If AbsPath is under FPaths::ProjectDir(), return the project-relative path
+	 * with forward slashes. Otherwise return the absolute path unchanged.
+	 * Used to write a portable SourcePath: header into audit files.
+	 */
+	static FString ToProjectRelativeSourcePath(const FString& AbsPath);
 
 	/** Compute an MD5 hash of the file at the given path. Returns empty string on failure. */
 	static FString ComputeFileHash(const FString& FilePath);
