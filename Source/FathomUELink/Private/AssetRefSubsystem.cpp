@@ -2,16 +2,18 @@
 
 #include "FathomHttpServer.h"
 #include "FathomUELinkModule.h"
+#include "Misc/App.h"
 
 void UAssetRefSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
 
 	// The HTTP server is only useful in interactive editor sessions.
-	// Skip it during commandlet runs (e.g. -run=BlueprintAudit) to avoid
-	// port conflicts with a running editor and unnecessary bind errors.
-	if (IsRunningCommandlet())
+	// Skip during commandlets, cook, and unattended runs (UAT packaging)
+	// to avoid port-bind conflicts with a concurrently running editor.
+	if (IsRunningCommandlet() || IsRunningCookCommandlet() || FApp::IsUnattended())
 	{
+		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Skipping HTTP server startup during commandlet/cook/unattended execution."));
 		return;
 	}
 

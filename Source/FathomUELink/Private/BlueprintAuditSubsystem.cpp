@@ -20,14 +20,17 @@
 #include "BehaviorTree/BehaviorTree.h"
 #include "Audit/AuditExtensionRegistry.h"
 #include "UObject/ObjectSaveContext.h"
+#include "Misc/App.h"
 
 void UBlueprintAuditSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
 
 	// The commandlet handles its own auditing. Skip on-save hooks, stale
-	// check, and manifest write to avoid interfering with the batch run.
-	if (IsRunningCommandlet())
+	// check, and manifest write during commandlets, cook, and unattended
+	// runs (UAT packaging) to avoid interfering with batch runs and to
+	// keep packaging output clean.
+	if (IsRunningCommandlet() || IsRunningCookCommandlet() || FApp::IsUnattended())
 	{
 		return;
 	}
