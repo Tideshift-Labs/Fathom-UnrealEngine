@@ -91,8 +91,7 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 
 	for (const FAssetData& Asset : AllBlueprints)
 	{
-		// Filter: Only audit project content (starts with /Game/)
-		if (!Asset.PackageName.ToString().StartsWith(TEXT("/Game/")))
+		if (!FAuditFileUtils::IsAuditablePackage(Asset.PackageName.ToString()))
 		{
 			++SkipCount;
 			continue;
@@ -155,7 +154,7 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 
 		for (const FAssetData& Asset : AllDataTables)
 		{
-			if (!Asset.PackageName.ToString().StartsWith(TEXT("/Game/")))
+			if (!FAuditFileUtils::IsAuditablePackage(Asset.PackageName.ToString()))
 			{
 				++SkipCount;
 				continue;
@@ -199,7 +198,7 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 
 		for (const FAssetData& Asset : AllDataAssets)
 		{
-			if (!Asset.PackageName.ToString().StartsWith(TEXT("/Game/")))
+			if (!FAuditFileUtils::IsAuditablePackage(Asset.PackageName.ToString()))
 			{
 				++SkipCount;
 				continue;
@@ -256,7 +255,7 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 
 		for (const FAssetData& Asset : AllStructs)
 		{
-			if (!Asset.PackageName.ToString().StartsWith(TEXT("/Game/")))
+			if (!FAuditFileUtils::IsAuditablePackage(Asset.PackageName.ToString()))
 			{
 				++SkipCount;
 				continue;
@@ -298,7 +297,7 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 
 		for (const FAssetData& Asset : AllMaterials)
 		{
-			if (!Asset.PackageName.ToString().StartsWith(TEXT("/Game/")))
+			if (!FAuditFileUtils::IsAuditablePackage(Asset.PackageName.ToString()))
 			{
 				++SkipCount;
 				continue;
@@ -340,7 +339,7 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 
 		for (const FAssetData& Asset : AllMaterialInstances)
 		{
-			if (!Asset.PackageName.ToString().StartsWith(TEXT("/Game/")))
+			if (!FAuditFileUtils::IsAuditablePackage(Asset.PackageName.ToString()))
 			{
 				++SkipCount;
 				continue;
@@ -382,7 +381,7 @@ int32 UBlueprintAuditCommandlet::Main(const FString& Params)
 
 		for (const FAssetData& Asset : AllBTs)
 		{
-			if (!Asset.PackageName.ToString().StartsWith(TEXT("/Game/")))
+			if (!FAuditFileUtils::IsAuditablePackage(Asset.PackageName.ToString()))
 			{
 				++SkipCount;
 				continue;

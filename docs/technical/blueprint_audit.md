@@ -21,7 +21,7 @@ UE Editor Plugin                          Rider Plugin (.NET backend)
  BlueprintAuditor (core extraction)       AuditMarkdownFormatter
          |                                          |
          +---writes--->  Saved/Fathom/Audit/v<N>/  <---reads---+
-                         Blueprints/*.md
+                         *.md
 ```
 
 The UE plugin writes Markdown files. The Rider plugin reads them. That is the entire interface.
@@ -94,7 +94,7 @@ It also hooks `OnAssetRemoved` and `OnAssetRenamed` to delete stale audit files 
 
 Headless, single-run via `UnrealEditor-Cmd.exe -run=BlueprintAudit`. Two modes:
 - **Single asset:** `-AssetPath=/Game/UI/WBP_Foo -Output=out.md`
-- **All project assets:** Dumps every `/Game/` Blueprint to individual `.md` files
+- **All project assets:** Dumps every auditable Blueprint to individual `.md` files. "Auditable" means `/Game/` content plus the mount points of project-type plugins (`EPluginType::Project`); engine/enterprise/external/mod plugins and `__ExternalActors__/__ExternalObjects__` packages are skipped.
 
 Uses the legacy synchronous `AuditBlueprint()` API (which wraps `GatherBlueprintData` + `SerializeToMarkdown` in sequence) since the commandlet runs single-threaded. Collects garbage every 50 assets to manage memory with large projects.
 
@@ -107,14 +107,14 @@ On editor startup, the subsystem runs a five-phase state machine that detects an
 | Phase | Name | Thread | Purpose |
 |-------|------|--------|---------|
 | 1 | WaitingForRegistry | Game (tick) | Waits for AssetRegistry to finish loading |
-| 2 | BuildingList | Game (tick) | Queries all `/Game/` Blueprints, collects package names and file paths |
+| 2 | BuildingList | Game (tick) | Queries all auditable Blueprints (`/Game/` plus project-plugin mount points), collects package names and file paths |
 | 3 | BackgroundHash | Thread pool | Computes MD5 hashes of `.uasset` files, compares against stored hashes in audit files |
 | 4 | ProcessingStale | Game (tick) | Loads stale Blueprints and re-audits them in batches of 5 per tick |
 | 5 | Done | Game (tick) | Sweeps orphaned audit files, unregisters ticker |
 
 The key design constraint is **never freezing the editor**. Phase 3 runs entirely on the thread pool. Phase 4 processes only 5 Blueprints per tick, then yields back to the engine. The state machine is driven by `FTSTicker`, which fires once per frame.
 
-After processing completes, `SweepOrphanedAuditFiles()` walks the audit directory and deletes `.md` files whose source `.uasset` no longer exists in the AssetRegistry.
+After processing completes, `SweepOrphanedAuditFiles()` walks the audit directory and deletes `.md` files whose source `.uasset` no longer exists in the AssetRegistry, or whose package is no longer auditable under the current policy (e.g. pre-existing `__ExternalActors__` audits, or audits for a project plugin that has since been disabled).
 
 ## Staleness detection
 
@@ -143,7 +143,7 @@ Both sides compute MD5 independently. The UE plugin uses `FMD5Hash::HashFile()`.
 The audit format is versioned via `FAuditFileUtils::AuditSchemaVersion` (C++, canonical constant; `FBlueprintAuditor::AuditSchemaVersion` proxies it) and `BlueprintAuditService.AuditSchemaVersion` (C#). The version is embedded in the output path:
 
 ```
-Saved/Fathom/Audit/v4/Blueprints/UI/Widgets/WBP_Foo.md
+Saved/Fathom/Audit/v4/UI/Widgets/WBP_Foo.md
              ^^
              schema version
 ```
@@ -207,7 +207,7 @@ The Rider-side `ParseAuditHeader()` reads the first few lines of the Markdown au
 
 ### 1. Full project scan on every commandlet invocation
 
-The batch commandlet (`-run=BlueprintAudit` without `-AssetPath`) re-audits every `/Game/` Blueprint in the project. There is no incremental mode for the commandlet. The subsystem handles incremental updates via on-save hooks, but when Rider triggers a refresh (e.g., after detecting stale data on boot), it runs a full scan.
+The batch commandlet (`-run=BlueprintAudit` without `-AssetPath`) re-audits every auditable Blueprint in the project (`/Game/` plus project-plugin mount points). There is no incremental mode for the commandlet. The subsystem handles incremental updates via on-save hooks, but when Rider triggers a refresh (e.g., after detecting stale data on boot), it runs a full scan.
 
 For large projects with hundreds of Blueprints, this can take tens of seconds. The commandlet uses `CollectGarbage` every 50 assets to manage memory, but the wall-clock time is proportional to Blueprint count.
 
@@ -251,9 +251,9 @@ When modifying the audit system, keep these in sync between the UE plugin and th
 | Item | UE plugin location | Rider plugin location |
 |------|-------------------|----------------------|
 | Schema version | `Audit/AuditFileUtils.h`: `FAuditFileUtils::AuditSchemaVersion` | `BlueprintAuditService.cs`: `AuditSchemaVersion` |
-| Audit output path pattern | `FAuditFileUtils::GetAuditBaseDir()`: `Saved/Fathom/Audit/v<N>/Blueprints/` | `BlueprintAuditService.cs`: hardcoded path construction |
+| Audit output path pattern | `FAuditFileUtils::GetAuditBaseDir()` + per-package mapping in `GetAuditOutputPath` (`<base>/<rel>` for `/Game/`, `<base>/_Plugins/<PluginName>/<rel>` for project plugins) | `BlueprintAuditService.cs`: discovery uses recursive enumeration; lookups match against the in-file `Path:` header |
 | Commandlet name | `BlueprintAuditCommandlet.h` class name -> `BlueprintAudit` | `BlueprintAuditService.cs`: `-run=BlueprintAudit` |
-| Header field names | Domain auditor `SerializeToMarkdown()` methods | `BlueprintAuditService.cs` `ParseAuditHeader()` and `ReadAndCheckBlueprintAudit()` |
+| Header field names | Domain auditor `SerializeToMarkdown()` methods (Path, Type, SourcePath, Hash, plus per-asset extras) | `BlueprintAuditService.cs` `ParseAuditHeader()` and `ReadAndCheckBlueprintAudit()` (latter prefers `SourcePath` and falls back to `ConvertPackagePathToFilePath` for older audits) |
 | Hash algorithm | `FMD5Hash::HashFile()` (MD5, lowercase hex) | `MD5.Create()` + `BitConverter.ToString().Replace("-","").ToLowerInvariant()` |
 
 ## Testing
@@ -268,13 +268,13 @@ UnrealEditor-Cmd.exe "path/to/Project.uproject" -run=BlueprintAudit -unattended 
 UnrealEditor-Cmd.exe "path/to/Project.uproject" -run=BlueprintAudit -AssetPath=/Game/UI/WBP_MainMenu
 ```
 
-Verify output at `<ProjectDir>/Saved/Fathom/Audit/v<N>/Blueprints/`.
+Verify output at `<ProjectDir>/Saved/Fathom/Audit/v<N>/`.
 
 ### On-save hooks
 
 1. Open the UE project in the editor with the plugin installed
 2. Open and save a Blueprint
-3. Check that the corresponding `.md` file in `Saved/Fathom/Audit/v<N>/Blueprints/` was updated
+3. Check that the corresponding `.md` file in `Saved/Fathom/Audit/v<N>/` was updated
 4. Verify the `Hash:` line in the `.md` file matches the current `.uasset` MD5
 
 ### Rider integration

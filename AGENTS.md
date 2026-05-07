@@ -19,7 +19,8 @@ Module type is **Editor-only** (`Type: Editor`) and does not ship in packaged/co
 This plugin works with the companion [Fathom](https://github.com/Tideshift-Labs/Fathom) Rider plugin. The contract is purely filesystem conventions, with no IPC, no sockets, and no compile-time dependencies.
 
 - **Audit schema version**: `FAuditFileUtils::AuditSchemaVersion` in `Audit/AuditFileUtils.h` (this repo) is the canonical constant. `FBlueprintAuditor::AuditSchemaVersion` proxies it for backward compatibility. Must match `BlueprintAuditService.AuditSchemaVersion` in the Rider repo. **Bump both together** when the audit format changes.
-- **Audit output path**: `Saved/Fathom/Audit/v<N>/Blueprints/...`. The version segment invalidates cached data automatically.
+- **Audit output path**: `Saved/Fathom/Audit/v<N>/...` mirroring the package's content root. `/Game/Foo/Bar` writes to `<base>/Foo/Bar.md`; `/MyPlugin/Foo/Bar` writes to `<base>/_Plugins/MyPlugin/Foo/Bar.md`. Only `/Game/` and project-type plugin mount points are audited; engine/enterprise/external/mod plugins and `__ExternalActors__/__ExternalObjects__` packages are excluded. The version segment invalidates cached data automatically.
+- **Source path resolution**: each audit file includes a `SourcePath:` header (project-relative `.uasset` path) so the Rider side can compute current hashes without reconstructing paths from package names. Older audits without the field fall back to deriving the path from `Path:`, which only handles `/Game/`.
 - **Audit version manifest**: `FAuditFileUtils::WriteAuditManifest()` writes `Saved/Fathom/audit-manifest.json` with the current schema version and audit directory path. The Rider plugin reads this to discover the correct version directory, decoupling the two plugins' upgrade cadence.
 - **Commandlet name**: `BlueprintAudit` is hardcoded on both sides.
 

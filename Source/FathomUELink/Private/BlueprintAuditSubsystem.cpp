@@ -118,8 +118,7 @@ void UBlueprintAuditSubsystem::OnPackageSaved(const FString& PackageFileName, UP
 		return;
 	}
 
-	// Filter: Only audit project content (starts with /Game/)
-	if (!Package->GetName().StartsWith(TEXT("/Game/")))
+	if (!FAuditFileUtils::IsAuditablePackage(Package->GetName()))
 	{
 		return;
 	}
@@ -281,7 +280,7 @@ void UBlueprintAuditSubsystem::OnPackageSaved(const FString& PackageFileName, UP
 void UBlueprintAuditSubsystem::OnAssetRemoved(const FAssetData& AssetData)
 {
 	const FString PackageName = AssetData.PackageName.ToString();
-	if (!PackageName.StartsWith(TEXT("/Game/")))
+	if (!FAuditFileUtils::IsAuditablePackage(PackageName))
 	{
 		return;
 	}
@@ -314,7 +313,7 @@ void UBlueprintAuditSubsystem::OnAssetRemoved(const FAssetData& AssetData)
 void UBlueprintAuditSubsystem::OnAssetRenamed(const FAssetData& AssetData, const FString& OldObjectPath)
 {
 	const FString OldPackageName = FPackageName::ObjectPathToPackageName(OldObjectPath);
-	if (!OldPackageName.StartsWith(TEXT("/Game/")))
+	if (!FAuditFileUtils::IsAuditablePackage(OldPackageName))
 	{
 		return;
 	}
@@ -376,7 +375,7 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 			for (const FAssetData& Asset : AllBlueprints)
 			{
 				const FString PackageName = Asset.PackageName.ToString();
-				if (!PackageName.StartsWith(TEXT("/Game/")))
+				if (!FAuditFileUtils::IsAuditablePackage(PackageName))
 				{
 					continue;
 				}
@@ -405,7 +404,7 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 			for (const FAssetData& Asset : AllDataTables)
 			{
 				const FString PackageName = Asset.PackageName.ToString();
-				if (!PackageName.StartsWith(TEXT("/Game/")))
+				if (!FAuditFileUtils::IsAuditablePackage(PackageName))
 				{
 					continue;
 				}
@@ -429,7 +428,7 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 			for (const FAssetData& Asset : AllDataAssets)
 			{
 				const FString PackageName = Asset.PackageName.ToString();
-				if (!PackageName.StartsWith(TEXT("/Game/")))
+				if (!FAuditFileUtils::IsAuditablePackage(PackageName))
 				{
 					continue;
 				}
@@ -466,7 +465,7 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 			for (const FAssetData& Asset : AllStructs)
 			{
 				const FString PackageName = Asset.PackageName.ToString();
-				if (!PackageName.StartsWith(TEXT("/Game/")))
+				if (!FAuditFileUtils::IsAuditablePackage(PackageName))
 				{
 					continue;
 				}
@@ -488,7 +487,7 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 			for (const FAssetData& Asset : AllMaterials)
 			{
 				const FString PackageName = Asset.PackageName.ToString();
-				if (!PackageName.StartsWith(TEXT("/Game/")))
+				if (!FAuditFileUtils::IsAuditablePackage(PackageName))
 				{
 					continue;
 				}
@@ -510,7 +509,7 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 			for (const FAssetData& Asset : AllMaterialInstances)
 			{
 				const FString PackageName = Asset.PackageName.ToString();
-				if (!PackageName.StartsWith(TEXT("/Game/")))
+				if (!FAuditFileUtils::IsAuditablePackage(PackageName))
 				{
 					continue;
 				}
@@ -532,7 +531,7 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 			for (const FAssetData& Asset : AllBTs)
 			{
 				const FString PackageName = Asset.PackageName.ToString();
-				if (!PackageName.StartsWith(TEXT("/Game/")))
+				if (!FAuditFileUtils::IsAuditablePackage(PackageName))
 				{
 					continue;
 				}
@@ -1054,7 +1053,21 @@ void UBlueprintAuditSubsystem::SweepOrphanedAuditFilesInDir(const FString& BaseD
 
 		RelPath.ReplaceInline(TEXT("\\"), TEXT("/"));
 
-		const FString PackageName = TEXT("/Game/") + RelPath;
+		const FString PackageName = FAuditFileUtils::PackageNameFromRelativeAuditPath(RelPath);
+		if (PackageName.IsEmpty())
+		{
+			continue;
+		}
+
+		// Audit policy may have changed since this file was written (e.g. external
+		// actors/objects are no longer auditable). Drop anything that no longer
+		// belongs, regardless of whether the underlying asset still exists.
+		if (!FAuditFileUtils::IsAuditablePackage(PackageName))
+		{
+			FBlueprintAuditor::DeleteAuditFile(AuditFile);
+			++SweptCount;
+			continue;
+		}
 
 		TArray<FAssetData> Assets;
 		AssetRegistry.GetAssetsByPackageName(FName(*PackageName), Assets, true);

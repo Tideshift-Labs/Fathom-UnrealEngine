@@ -23,6 +23,7 @@ public class FathomUELink : ModuleRules
 			"ControlRig",
 			"ControlRigDeveloper",
 			"Json",
+			"Projects",
 			"RigVMDeveloper",
 			"UMG",
 			"UMGEditor",

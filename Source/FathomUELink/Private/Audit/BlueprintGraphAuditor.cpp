@@ -627,6 +627,7 @@ FString FBlueprintGraphAuditor::SerializeToMarkdown(const FBlueprintAuditData& D
 
 	if (!Data.SourceFilePath.IsEmpty())
 	{
+		Result += FString::Printf(TEXT("SourcePath: %s\n"), *FAuditFileUtils::ToProjectRelativeSourcePath(Data.SourceFilePath));
 		Result += FString::Printf(TEXT("Hash: %s\n"), *FAuditFileUtils::ComputeFileHash(Data.SourceFilePath));
 	}
 
