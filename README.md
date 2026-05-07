@@ -77,6 +77,29 @@ See [Fathom/docs/release.md](../Fathom/docs/release.md) for the full release pro
 - Unreal Engine 5.x (tested with 5.7)
 - Editor builds only (not packaged games)
 
+## Troubleshooting
+
+### `BuildPlugin` fails with `MarketplaceRules.dll` being used by another process
+
+When the plugin is installed to the engine (`Engine/Plugins/Marketplace/...`), `BuildPlugin` compiles every marketplace plugin's `*.Build.cs` into a single per-user rules assembly at `%LOCALAPPDATA%\UnrealEngine\Intermediate\Build\BuildRules\MarketplaceRules.dll`. If anything else has that DLL loaded, the build aborts with:
+
+```
+IOException: The process cannot access the file '...\MarketplaceRules.dll' because it is being used by another process.
+```
+
+Epic Games Launcher being open is not on its own a reliable trigger; many builds succeed with the Launcher running. The lock typically shows up when something is actively touching the marketplace plugin set, for example:
+
+- Epic Games Launcher is verifying, installing, updating, or repairing the engine version (including applying a fix-pack such as 5.7.3 to 5.7.4).
+- The Launcher is refreshing its Vault or Installed Plugins view right after a marketplace install or uninstall.
+- A second `UnrealBuildTool` invocation is running in parallel (another editor instance, a `Generate Project Files` run, or a concurrent build from Rider).
+- A previous build crashed and left a helper process holding the assembly.
+
+Workarounds, in order of preference:
+
+1. Close the contending process (most often Epic Games Launcher), wait for any in-flight engine verify or install to finish, and rerun the build.
+2. If the lock persists after closing the Launcher, check Task Manager for stray `UnrealBuildTool`, `MSBuild`, or `dotnet` processes referencing `MarketplaceRules.dll` and end them.
+3. As a more permanent workaround, install the plugin to the game project (`<Project>/Plugins/FathomUELink`) instead of the engine. Project-level plugins compile into a per-project rules assembly and do not contend with `MarketplaceRules.dll`.
+
 ## Documentation
 
 - **[Audit Format](docs/audit_format.md)**: Full Markdown output specification with examples
