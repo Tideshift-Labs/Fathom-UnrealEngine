@@ -29,7 +29,10 @@ namespace FathomAuditHelpers
 
 	/**
 	 * Format a property value for Markdown output, recursing into structs,
-	 * arrays, sets, and maps.
+	 * arrays, sets, maps, and dynamic-schema wrappers (FInstancedStruct and
+	 * FInstancedPropertyBag). The dynamic wrappers are unwrapped to their
+	 * runtime UScriptStruct + memory so their actual contents surface in
+	 * the audit; see docs/learnings/statetree-instanced-property-decoding.md.
 	 *
 	 * Returns either:
 	 *   - a single-line scalar string (no trailing newline), or

@@ -31,6 +31,9 @@ struct FStateTreeTransitionAuditData
 	bool bDelayTransition = false;
 	float DelayDuration = 0.f;
 	float DelayRandomVariance = 0.f;
+	FString DelegateName;        // For OnDelegate triggers, e.g. "Exit (Button Clicked).OnTriggered"
+	FString EventTag;            // For OnEvent triggers, gameplay tag path
+	FString EventPayloadStruct;  // Optional payload struct name (OnEvent)
 	TArray<FStateTreeEditorNodeAuditData> Conditions;
 };
 

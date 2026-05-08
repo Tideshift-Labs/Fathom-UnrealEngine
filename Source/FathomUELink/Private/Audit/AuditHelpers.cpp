@@ -5,6 +5,8 @@
 #include "UObject/PropertyPortFlags.h"
 #include "UObject/Class.h"
 #include "UObject/Package.h"
+#include "StructUtils/InstancedStruct.h"
+#include "StructUtils/PropertyBag.h"
 
 FString FathomAuditHelpers::CleanExportedValue(const FString& Raw)
 {
@@ -268,6 +270,14 @@ namespace FathomAuditHelpers
 	static FString FormatStructValue(const UScriptStruct* StructType, const void* StructPtr, int32 IndentDepth, FFormatContext& Ctx);
 	static FString FormatInstancedObjectFields(const UObject* Object, int32 IndentDepth, FFormatContext& Ctx);
 	static FString GetInstancedObjectLabel(const UObject* Object);
+
+	/**
+	 * Decode an FInstancedPropertyBag's dynamic schema and emit its current values.
+	 * Bags carry a runtime-built UScriptStruct, so static FProperty walking on the
+	 * bag itself yields nothing useful. Once unwrapped via GetValue(), the inner
+	 * struct view feeds straight into FormatStructValue.
+	 */
+	static FString FormatPropertyBagValue(const FInstancedPropertyBag& Bag, int32 IndentDepth, FFormatContext& Ctx);
 
 	/**
 	 * True when Prop owns its referenced UObject and we should recurse into the
@@ -592,8 +602,35 @@ namespace FathomAuditHelpers
 			return FString();
 		}
 
+		// Unwrap dynamic-schema wrappers so all callers (including TArray /
+		// TSet / TMap element walkers, not just FStructProperty in
+		// FormatPropertyValueImpl) get bag and instanced-struct contents
+		// surfaced uniformly. No infinite recursion risk: bag inner types
+		// are distinct USTRUCTs, and FInstancedStruct cannot contain itself
+		// at the C++ type level.
+		if (StructType == FInstancedPropertyBag::StaticStruct())
+		{
+			const FInstancedPropertyBag* Bag = static_cast<const FInstancedPropertyBag*>(StructPtr);
+			return FormatPropertyBagValue(*Bag, IndentDepth, Ctx);
+		}
+		if (StructType == FInstancedStruct::StaticStruct())
+		{
+			const FInstancedStruct* Inst = static_cast<const FInstancedStruct*>(StructPtr);
+			if (const UScriptStruct* InnerType = Inst->GetScriptStruct())
+			{
+				return FormatStructValue(InnerType, Inst->GetMemory(), IndentDepth, Ctx);
+			}
+			return TEXT("None");
+		}
+
 		// Allocate a default-initialized struct so we can skip per-field defaults.
+		// Zero-size structs (empty/dynamic schemas) would crash InitializeStruct's
+		// check(Dest), so bail early; an empty struct has nothing to emit anyway.
 		const int32 StructSize = StructType->GetStructureSize();
+		if (StructSize <= 0)
+		{
+			return FString();
+		}
 		TArray<uint8> DefaultBuffer;
 		DefaultBuffer.SetNumZeroed(StructSize);
 		StructType->InitializeStruct(DefaultBuffer.GetData());
@@ -634,6 +671,55 @@ namespace FathomAuditHelpers
 		}
 
 		StructType->DestroyStruct(DefaultBuffer.GetData());
+		return Result;
+	}
+
+	/**
+	 * Walk a property bag's dynamic schema directly, without the default-comparison
+	 * buffer trick used in FormatStructValue. UPropertyBag overrides InitializeStruct
+	 * to increment a refcount and asserts when handed a zero-size buffer (empty bag),
+	 * so we can't use the same path. Bags also represent values the owner explicitly
+	 * set, so emitting all populated fields is the desired behavior anyway.
+	 */
+	static FString FormatPropertyBagValue(const FInstancedPropertyBag& Bag, int32 IndentDepth, FFormatContext& Ctx)
+	{
+		const FConstStructView View = Bag.GetValue();
+		const UScriptStruct* StructType = View.GetScriptStruct();
+		const uint8* Memory = View.GetMemory();
+		if (!StructType || !Memory)
+		{
+			return FString();
+		}
+
+		const FString FieldIndent = MakeIndent(IndentDepth);
+		FString Result;
+
+		for (TFieldIterator<FProperty> FieldIt(StructType); FieldIt; ++FieldIt)
+		{
+			const FProperty* Field = *FieldIt;
+			if (Field->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated))
+			{
+				continue;
+			}
+
+			const void* FieldPtr = Field->ContainerPtrToValuePtr<void>(Memory);
+
+			FString Sub = FormatPropertyValueImpl(Field, FieldPtr, IndentDepth + 1, Ctx);
+			if (Sub.IsEmpty() || Sub == TEXT("()") || Sub == TEXT("None"))
+			{
+				continue;
+			}
+
+			if (Sub.Contains(TEXT("\n")))
+			{
+				Result += FString::Printf(TEXT("%s- %s:\n%s"), *FieldIndent, *Field->GetAuthoredName(), *Sub);
+			}
+			else
+			{
+				Result += FString::Printf(TEXT("%s- %s: %s\n"), *FieldIndent, *Field->GetAuthoredName(), *Sub);
+			}
+		}
+
 		return Result;
 	}
 

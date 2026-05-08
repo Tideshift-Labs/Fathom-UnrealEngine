@@ -469,6 +469,53 @@ static FStateTreeTransitionAuditData GatherTransitionData(
 	}
 #endif
 
+	// Trigger-specific discriminators. OnDelegate is encoded as a property binding on
+	// the transition (target = DelegateListener); OnEvent stores its filter inline.
+	const uint8 TriggerVal = static_cast<uint8>(Transition.Trigger);
+
+	if (TriggerVal & static_cast<uint8>(EStateTreeTransitionTrigger::OnDelegate))
+	{
+		// FStateTreeTransitionDelegateListener is an empty marker struct; the
+		// dispatcher identity is encoded as a property binding whose target is
+		// the transition's DelegateListener field. Resolve by walking transition-
+		// keyed bindings and picking the one whose target hits that field name.
+		const TArray<FStateTreePropertyBindingAuditData> TransitionBindings =
+			GatherNodeBindings(EditorData, Transition.ID, BindableNames);
+		for (const FStateTreePropertyBindingAuditData& Binding : TransitionBindings)
+		{
+			if (Binding.TargetProperty.Contains(TEXT("DelegateListener")) && !Binding.SourcePath.IsEmpty())
+			{
+				TransData.DelegateName = Binding.SourcePath;
+				break;
+			}
+		}
+		// Best-effort fallback: if the field-name match missed (e.g. UE renames
+		// DelegateListener in a future version), and the transition has only
+		// a single binding, that single binding is almost certainly the
+		// dispatcher anyway. Skip the fallback when more than one binding is
+		// present to avoid surfacing an unrelated source as the delegate.
+		if (TransData.DelegateName.IsEmpty() && TransitionBindings.Num() == 1)
+		{
+			const FStateTreePropertyBindingAuditData& Sole = TransitionBindings[0];
+			if (!Sole.SourcePath.IsEmpty())
+			{
+				TransData.DelegateName = Sole.SourcePath;
+			}
+		}
+	}
+
+	if (TriggerVal & static_cast<uint8>(EStateTreeTransitionTrigger::OnEvent))
+	{
+		if (Transition.RequiredEvent.Tag.IsValid())
+		{
+			TransData.EventTag = Transition.RequiredEvent.Tag.ToString();
+		}
+		if (Transition.RequiredEvent.PayloadStruct)
+		{
+			TransData.EventPayloadStruct = Transition.RequiredEvent.PayloadStruct->GetName();
+		}
+	}
+
 	for (const FStateTreeEditorNode& CondNode : Transition.Conditions)
 	{
 		TransData.Conditions.Add(GatherEditorNodeData(CondNode, EditorData, BindableNames));
@@ -740,7 +787,26 @@ static void SerializeTransitions(FString& Out, const TArray<FStateTreeTransition
 {
 	for (const FStateTreeTransitionAuditData& Trans : Transitions)
 	{
-		FString Line = FString::Printf(TEXT("%s -> %s"), *Trans.Trigger, *Trans.TargetState);
+		FString TriggerLabel = Trans.Trigger;
+		if (!Trans.DelegateName.IsEmpty())
+		{
+			TriggerLabel += FString::Printf(TEXT(" (%s)"), *Trans.DelegateName);
+		}
+		else if (!Trans.EventTag.IsEmpty())
+		{
+			FString EventDetail = Trans.EventTag;
+			if (!Trans.EventPayloadStruct.IsEmpty())
+			{
+				EventDetail += FString::Printf(TEXT(", payload %s"), *Trans.EventPayloadStruct);
+			}
+			TriggerLabel += FString::Printf(TEXT(" (%s)"), *EventDetail);
+		}
+		else if (!Trans.EventPayloadStruct.IsEmpty())
+		{
+			TriggerLabel += FString::Printf(TEXT(" (payload %s)"), *Trans.EventPayloadStruct);
+		}
+
+		FString Line = FString::Printf(TEXT("%s -> %s"), *TriggerLabel, *Trans.TargetState);
 
 		if (Trans.Priority != TEXT("Normal") && Trans.Priority != TEXT("None"))
 		{
