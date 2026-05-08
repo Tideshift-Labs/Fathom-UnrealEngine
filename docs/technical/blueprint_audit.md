@@ -161,7 +161,7 @@ When the format changes, bump the version on both sides. All existing cached fil
 | Section | Detail level |
 |---------|-------------|
 | Variables | Name, type (with container generics), category, `InstanceEditable`, `Replicated` |
-| Property overrides | CDO diff: properties where the Blueprint's default differs from the parent class default |
+| Property overrides | CDO diff: properties where the Blueprint's default differs from the parent class default. Arrays/sets/maps/structs and `Instanced` UObject subobjects are recursed into; cycle and depth (8) guards apply to instanced trees |
 | Components | Name and class from `SimpleConstructionScript` |
 | Timelines | Name, length, loop/autoplay flags, track counts per type |
 | Event graphs | Per-node: events, function calls (with target class, native flag, hardcoded input values), variable reads/writes, macro instances |

@@ -1,8 +1,10 @@
 #include "Audit/AuditHelpers.h"
 
+#include "Misc/ScopeExit.h"
 #include "UObject/UnrealType.h"
 #include "UObject/PropertyPortFlags.h"
 #include "UObject/Class.h"
+#include "UObject/Package.h"
 
 FString FathomAuditHelpers::CleanExportedValue(const FString& Raw)
 {
@@ -247,8 +249,41 @@ namespace FathomAuditHelpers
 		return FString::ChrN(FMath::Max(Depth, 0) * 2, TEXT(' '));
 	}
 
-	// Forward decl for mutual recursion with FormatPropertyValue.
-	static FString FormatStructValue(const UScriptStruct* StructType, const void* StructPtr, int32 IndentDepth);
+	/**
+	 * Recursion state for instanced-subobject expansion. Visited tracks the active
+	 * stack to detect cycles; Depth caps runaway nesting. Both are needed because
+	 * Instanced UPROPERTY chains (e.g. UGameplayEffect::GEComponents -> per-config
+	 * subobjects) can in principle reference back into themselves.
+	 */
+	static constexpr int32 MaxInstancedRecursionDepth = 8;
+
+	struct FFormatContext
+	{
+		TSet<const UObject*> Visited;
+		int32 InstancedDepth = 0;
+	};
+
+	// Forward decls for mutual recursion.
+	static FString FormatPropertyValueImpl(const FProperty* Prop, const void* ValuePtr, int32 IndentDepth, FFormatContext& Ctx);
+	static FString FormatStructValue(const UScriptStruct* StructType, const void* StructPtr, int32 IndentDepth, FFormatContext& Ctx);
+	static FString FormatInstancedObjectFields(const UObject* Object, int32 IndentDepth, FFormatContext& Ctx);
+	static FString GetInstancedObjectLabel(const UObject* Object);
+
+	/**
+	 * True when Prop owns its referenced UObject and we should recurse into the
+	 * subobject's fields instead of emitting a path string. Detection relies on
+	 * CPF_InstancedReference, which UE sets for UPROPERTY(Instanced ...) and
+	 * propagates onto array/set/map inner properties. External asset refs
+	 * (e.g. UTexture2D*) never carry this flag, so they keep the existing
+	 * path-string behavior.
+	 */
+	static bool IsInstancedObjectProperty(const FProperty* Prop)
+	{
+		if (!Prop) return false;
+		const FObjectProperty* ObjProp = CastField<FObjectProperty>(Prop);
+		if (!ObjProp) return false;
+		return Prop->HasAnyPropertyFlags(CPF_InstancedReference);
+	}
 
 	/**
 	 * If Prop is an enum-typed property and Exported is a recognized internal enum
@@ -339,143 +374,218 @@ FString FathomAuditHelpers::StripObjectPathToAssetName(const FString& Raw)
 
 FString FathomAuditHelpers::FormatPropertyValue(const FProperty* Prop, const void* ValuePtr, int32 IndentDepth)
 {
-	if (!Prop || !ValuePtr)
-	{
-		return FString();
-	}
-
-	// --- Array ---
-	if (const FArrayProperty* ArrayProp = CastField<FArrayProperty>(Prop))
-	{
-		FScriptArrayHelper Helper(ArrayProp, ValuePtr);
-		const int32 N = Helper.Num();
-		if (N == 0)
-		{
-			return TEXT("[]");
-		}
-
-		const FProperty* Inner = ArrayProp->Inner;
-		const FString ItemIndent = MakeIndent(IndentDepth);
-		FString Result;
-		for (int32 i = 0; i < N; ++i)
-		{
-			const void* ElemPtr = Helper.GetRawPtr(i);
-			if (const FStructProperty* StructInner = CastField<FStructProperty>(Inner))
-			{
-				const FString StructLines = FormatStructValue(StructInner->Struct, ElemPtr, IndentDepth + 1);
-				if (StructLines.IsEmpty())
-				{
-					// Element matches default for every field; render as "N. (default)" so the
-					// element count is still preserved.
-					Result += FString::Printf(TEXT("%s%d. (default)\n"), *ItemIndent, i + 1);
-				}
-				else
-				{
-					Result += FString::Printf(TEXT("%s%d.\n%s"), *ItemIndent, i + 1, *StructLines);
-				}
-			}
-			else
-			{
-				const FString Inline = FormatScalarProperty(Inner, ElemPtr);
-				Result += FString::Printf(TEXT("%s%d. %s\n"), *ItemIndent, i + 1, *Inline);
-			}
-		}
-		return Result;
-	}
-
-	// --- Set ---
-	if (const FSetProperty* SetProp = CastField<FSetProperty>(Prop))
-	{
-		FScriptSetHelper Helper(SetProp, ValuePtr);
-		if (Helper.Num() == 0)
-		{
-			return TEXT("[]");
-		}
-
-		const FProperty* Inner = SetProp->ElementProp;
-		const FString ItemIndent = MakeIndent(IndentDepth);
-		FString Result;
-		int32 OrdinalIndex = 0;
-		for (int32 i = 0; i < Helper.GetMaxIndex(); ++i)
-		{
-			if (!Helper.IsValidIndex(i))
-			{
-				continue;
-			}
-			const void* ElemPtr = Helper.GetElementPtr(i);
-			++OrdinalIndex;
-			if (const FStructProperty* StructInner = CastField<FStructProperty>(Inner))
-			{
-				const FString StructLines = FormatStructValue(StructInner->Struct, ElemPtr, IndentDepth + 1);
-				if (StructLines.IsEmpty())
-				{
-					Result += FString::Printf(TEXT("%s%d. (default)\n"), *ItemIndent, OrdinalIndex);
-				}
-				else
-				{
-					Result += FString::Printf(TEXT("%s%d.\n%s"), *ItemIndent, OrdinalIndex, *StructLines);
-				}
-			}
-			else
-			{
-				const FString Inline = FormatScalarProperty(Inner, ElemPtr);
-				Result += FString::Printf(TEXT("%s%d. %s\n"), *ItemIndent, OrdinalIndex, *Inline);
-			}
-		}
-		return Result;
-	}
-
-	// --- Map ---
-	if (const FMapProperty* MapProp = CastField<FMapProperty>(Prop))
-	{
-		FScriptMapHelper Helper(MapProp, ValuePtr);
-		if (Helper.Num() == 0)
-		{
-			return TEXT("{}");
-		}
-
-		const FProperty* KeyProp = MapProp->KeyProp;
-		const FProperty* ValProp = MapProp->ValueProp;
-		const FString ItemIndent = MakeIndent(IndentDepth);
-		FString Result;
-		for (int32 i = 0; i < Helper.GetMaxIndex(); ++i)
-		{
-			if (!Helper.IsValidIndex(i))
-			{
-				continue;
-			}
-			const void* KeyPtr = Helper.GetKeyPtr(i);
-			const void* ValPtr = Helper.GetValuePtr(i);
-
-			// Keys are typically scalar; render inline.
-			const FString KeyStr = FormatScalarProperty(KeyProp, KeyPtr);
-			const FString ValStr = FormatPropertyValue(ValProp, ValPtr, IndentDepth + 1);
-
-			if (ValStr.Contains(TEXT("\n")))
-			{
-				Result += FString::Printf(TEXT("%s- %s:\n%s"), *ItemIndent, *KeyStr, *ValStr);
-			}
-			else
-			{
-				Result += FString::Printf(TEXT("%s- %s: %s\n"), *ItemIndent, *KeyStr, *ValStr);
-			}
-		}
-		return Result;
-	}
-
-	// --- Struct ---
-	if (const FStructProperty* StructProp = CastField<FStructProperty>(Prop))
-	{
-		return FormatStructValue(StructProp->Struct, ValuePtr, IndentDepth);
-	}
-
-	// --- Scalar fallback ---
-	return FormatScalarProperty(Prop, ValuePtr);
+	FFormatContext Ctx;
+	return FormatPropertyValueImpl(Prop, ValuePtr, IndentDepth, Ctx);
 }
 
 namespace FathomAuditHelpers
 {
-	static FString FormatStructValue(const UScriptStruct* StructType, const void* StructPtr, int32 IndentDepth)
+	/**
+	 * Render an instanced-object array/set element: "N. <Label>" header line
+	 * followed by the subobject's expanded field block. Shared between the
+	 * array and set branches.
+	 */
+	static FString FormatInstancedContainerElement(
+		const UObject* Object,
+		int32 OrdinalIndex,
+		int32 IndentDepth,
+		FFormatContext& Ctx,
+		const FString& ItemIndent)
+	{
+		const FString Label = GetInstancedObjectLabel(Object);
+		const FString Fields = FormatInstancedObjectFields(Object, IndentDepth + 1, Ctx);
+		if (Fields.IsEmpty())
+		{
+			return FString::Printf(TEXT("%s%d. %s (default)\n"), *ItemIndent, OrdinalIndex, *Label);
+		}
+		return FString::Printf(TEXT("%s%d. %s\n%s"), *ItemIndent, OrdinalIndex, *Label, *Fields);
+	}
+
+	static FString FormatPropertyValueImpl(const FProperty* Prop, const void* ValuePtr, int32 IndentDepth, FFormatContext& Ctx)
+	{
+		if (!Prop || !ValuePtr)
+		{
+			return FString();
+		}
+
+		// --- Array ---
+		if (const FArrayProperty* ArrayProp = CastField<FArrayProperty>(Prop))
+		{
+			FScriptArrayHelper Helper(ArrayProp, ValuePtr);
+			const int32 N = Helper.Num();
+			if (N == 0)
+			{
+				return TEXT("[]");
+			}
+
+			const FProperty* Inner = ArrayProp->Inner;
+			const FString ItemIndent = MakeIndent(IndentDepth);
+			FString Result;
+			for (int32 i = 0; i < N; ++i)
+			{
+				const void* ElemPtr = Helper.GetRawPtr(i);
+				if (const FStructProperty* StructInner = CastField<FStructProperty>(Inner))
+				{
+					const FString StructLines = FormatStructValue(StructInner->Struct, ElemPtr, IndentDepth + 1, Ctx);
+					if (StructLines.IsEmpty())
+					{
+						// Element matches default for every field; render as "N. (default)" so the
+						// element count is still preserved.
+						Result += FString::Printf(TEXT("%s%d. (default)\n"), *ItemIndent, i + 1);
+					}
+					else
+					{
+						Result += FString::Printf(TEXT("%s%d.\n%s"), *ItemIndent, i + 1, *StructLines);
+					}
+				}
+				else if (IsInstancedObjectProperty(Inner))
+				{
+					const FObjectProperty* ObjInner = CastFieldChecked<FObjectProperty>(Inner);
+					const UObject* SubObj = ObjInner->GetObjectPropertyValue(ElemPtr);
+					if (!SubObj)
+					{
+						Result += FString::Printf(TEXT("%s%d. None\n"), *ItemIndent, i + 1);
+					}
+					else
+					{
+						Result += FormatInstancedContainerElement(SubObj, i + 1, IndentDepth, Ctx, ItemIndent);
+					}
+				}
+				else
+				{
+					const FString Inline = FormatScalarProperty(Inner, ElemPtr);
+					Result += FString::Printf(TEXT("%s%d. %s\n"), *ItemIndent, i + 1, *Inline);
+				}
+			}
+			return Result;
+		}
+
+		// --- Set ---
+		if (const FSetProperty* SetProp = CastField<FSetProperty>(Prop))
+		{
+			FScriptSetHelper Helper(SetProp, ValuePtr);
+			if (Helper.Num() == 0)
+			{
+				return TEXT("[]");
+			}
+
+			const FProperty* Inner = SetProp->ElementProp;
+			const FString ItemIndent = MakeIndent(IndentDepth);
+			FString Result;
+			int32 OrdinalIndex = 0;
+			for (int32 i = 0; i < Helper.GetMaxIndex(); ++i)
+			{
+				if (!Helper.IsValidIndex(i))
+				{
+					continue;
+				}
+				const void* ElemPtr = Helper.GetElementPtr(i);
+				++OrdinalIndex;
+				if (const FStructProperty* StructInner = CastField<FStructProperty>(Inner))
+				{
+					const FString StructLines = FormatStructValue(StructInner->Struct, ElemPtr, IndentDepth + 1, Ctx);
+					if (StructLines.IsEmpty())
+					{
+						Result += FString::Printf(TEXT("%s%d. (default)\n"), *ItemIndent, OrdinalIndex);
+					}
+					else
+					{
+						Result += FString::Printf(TEXT("%s%d.\n%s"), *ItemIndent, OrdinalIndex, *StructLines);
+					}
+				}
+				else if (IsInstancedObjectProperty(Inner))
+				{
+					const FObjectProperty* ObjInner = CastFieldChecked<FObjectProperty>(Inner);
+					const UObject* SubObj = ObjInner->GetObjectPropertyValue(ElemPtr);
+					if (!SubObj)
+					{
+						Result += FString::Printf(TEXT("%s%d. None\n"), *ItemIndent, OrdinalIndex);
+					}
+					else
+					{
+						Result += FormatInstancedContainerElement(SubObj, OrdinalIndex, IndentDepth, Ctx, ItemIndent);
+					}
+				}
+				else
+				{
+					const FString Inline = FormatScalarProperty(Inner, ElemPtr);
+					Result += FString::Printf(TEXT("%s%d. %s\n"), *ItemIndent, OrdinalIndex, *Inline);
+				}
+			}
+			return Result;
+		}
+
+		// --- Map ---
+		if (const FMapProperty* MapProp = CastField<FMapProperty>(Prop))
+		{
+			FScriptMapHelper Helper(MapProp, ValuePtr);
+			if (Helper.Num() == 0)
+			{
+				return TEXT("{}");
+			}
+
+			const FProperty* KeyProp = MapProp->KeyProp;
+			const FProperty* ValProp = MapProp->ValueProp;
+			const FString ItemIndent = MakeIndent(IndentDepth);
+			FString Result;
+			for (int32 i = 0; i < Helper.GetMaxIndex(); ++i)
+			{
+				if (!Helper.IsValidIndex(i))
+				{
+					continue;
+				}
+				const void* KeyPtr = Helper.GetKeyPtr(i);
+				const void* ValPtr = Helper.GetValuePtr(i);
+
+				// Keys are typically scalar; render inline.
+				const FString KeyStr = FormatScalarProperty(KeyProp, KeyPtr);
+				const FString ValStr = FormatPropertyValueImpl(ValProp, ValPtr, IndentDepth + 1, Ctx);
+
+				if (ValStr.Contains(TEXT("\n")))
+				{
+					Result += FString::Printf(TEXT("%s- %s:\n%s"), *ItemIndent, *KeyStr, *ValStr);
+				}
+				else
+				{
+					Result += FString::Printf(TEXT("%s- %s: %s\n"), *ItemIndent, *KeyStr, *ValStr);
+				}
+			}
+			return Result;
+		}
+
+		// --- Struct ---
+		if (const FStructProperty* StructProp = CastField<FStructProperty>(Prop))
+		{
+			return FormatStructValue(StructProp->Struct, ValuePtr, IndentDepth, Ctx);
+		}
+
+		// --- Instanced UObject (UPROPERTY Instanced) ---
+		if (IsInstancedObjectProperty(Prop))
+		{
+			const FObjectProperty* ObjProp = CastFieldChecked<FObjectProperty>(Prop);
+			const UObject* SubObj = ObjProp->GetObjectPropertyValue(ValuePtr);
+			if (!SubObj)
+			{
+				return TEXT("None");
+			}
+			const FString Label = GetInstancedObjectLabel(SubObj);
+			const FString Fields = FormatInstancedObjectFields(SubObj, IndentDepth + 1, Ctx);
+			if (Fields.IsEmpty())
+			{
+				return Label;
+			}
+			const FString HeaderIndent = MakeIndent(IndentDepth);
+			return FString::Printf(TEXT("%s%s\n%s"), *HeaderIndent, *Label, *Fields);
+		}
+
+		// --- Scalar fallback ---
+		return FormatScalarProperty(Prop, ValuePtr);
+	}
+}
+
+namespace FathomAuditHelpers
+{
+	static FString FormatStructValue(const UScriptStruct* StructType, const void* StructPtr, int32 IndentDepth, FFormatContext& Ctx)
 	{
 		if (!StructType || !StructPtr)
 		{
@@ -507,7 +617,7 @@ namespace FathomAuditHelpers
 				continue;
 			}
 
-			FString Sub = FormatPropertyValue(Field, FieldPtr, IndentDepth + 1);
+			FString Sub = FormatPropertyValueImpl(Field, FieldPtr, IndentDepth + 1, Ctx);
 			if (Sub.IsEmpty() || Sub == TEXT("()") || Sub == TEXT("None"))
 			{
 				continue;
@@ -524,6 +634,116 @@ namespace FathomAuditHelpers
 		}
 
 		StructType->DestroyStruct(DefaultBuffer.GetData());
+		return Result;
+	}
+
+	/**
+	 * Read a non-empty EditorFriendlyName off the subobject if the class declares
+	 * one (GAS UGameplayEffectComponent does, transient). Falls back to class name.
+	 * The friendly name is what shows up in the editor index, e.g. "Grant Abilities
+	 * While Active" rather than "GameplayEffectComponent_GrantAbilitiesWhileActive".
+	 */
+	static FString GetInstancedObjectLabel(const UObject* Object)
+	{
+		if (!Object)
+		{
+			return TEXT("None");
+		}
+		const UClass* Class = Object->GetClass();
+		const FString ClassName = Class ? Class->GetName() : TEXT("UObject");
+
+		if (Class)
+		{
+			if (const FProperty* FriendlyProp = Class->FindPropertyByName(TEXT("EditorFriendlyName")))
+			{
+				if (const FStrProperty* StrProp = CastField<FStrProperty>(FriendlyProp))
+				{
+					const FString FriendlyValue = StrProp->GetPropertyValue_InContainer(Object);
+					if (!FriendlyValue.IsEmpty())
+					{
+						return FString::Printf(TEXT("%s (%s)"), *FriendlyValue, *ClassName);
+					}
+				}
+			}
+		}
+		return ClassName;
+	}
+
+	/**
+	 * Walk the subobject's UClass properties and emit field bullets, skipping
+	 * fields that match the class CDO. Cycle and depth guards via Ctx; a hit
+	 * either guard returns a sentinel string instead of recursing.
+	 */
+	static FString FormatInstancedObjectFields(const UObject* Object, int32 IndentDepth, FFormatContext& Ctx)
+	{
+		if (!Object)
+		{
+			return FString();
+		}
+
+		const UClass* Class = Object->GetClass();
+		if (!Class || Class->IsChildOf<UClass>() || Class->IsChildOf<UPackage>())
+		{
+			return FString();
+		}
+
+		const FString FieldIndent = MakeIndent(IndentDepth);
+
+		if (Ctx.InstancedDepth >= MaxInstancedRecursionDepth)
+		{
+			return FString::Printf(TEXT("%s- (depth limit reached)\n"), *FieldIndent);
+		}
+		if (Ctx.Visited.Contains(Object))
+		{
+			return FString::Printf(TEXT("%s- (cycle: %s)\n"), *FieldIndent, *Class->GetName());
+		}
+
+		Ctx.Visited.Add(Object);
+		++Ctx.InstancedDepth;
+		ON_SCOPE_EXIT
+		{
+			Ctx.Visited.Remove(Object);
+			--Ctx.InstancedDepth;
+		};
+
+		const UObject* CDO = Class->GetDefaultObject();
+		FString Result;
+
+		for (TFieldIterator<FProperty> It(Class); It; ++It)
+		{
+			const FProperty* Field = *It;
+			if (Field->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated))
+			{
+				continue;
+			}
+			if (!Field->HasAnyPropertyFlags(CPF_Edit | CPF_BlueprintVisible))
+			{
+				continue;
+			}
+
+			const void* FieldPtr = Field->ContainerPtrToValuePtr<void>(Object);
+			const void* DefaultPtr = CDO ? Field->ContainerPtrToValuePtr<void>(CDO) : nullptr;
+			if (DefaultPtr && Field->Identical(FieldPtr, DefaultPtr))
+			{
+				continue;
+			}
+
+			FString Sub = FormatPropertyValueImpl(Field, FieldPtr, IndentDepth + 1, Ctx);
+			if (Sub.IsEmpty() || Sub == TEXT("()") || Sub == TEXT("None"))
+			{
+				continue;
+			}
+
+			if (Sub.Contains(TEXT("\n")))
+			{
+				Result += FString::Printf(TEXT("%s- %s:\n%s"), *FieldIndent, *Field->GetAuthoredName(), *Sub);
+			}
+			else
+			{
+				Result += FString::Printf(TEXT("%s- %s: %s\n"), *FieldIndent, *Field->GetAuthoredName(), *Sub);
+			}
+		}
+
 		return Result;
 	}
 }

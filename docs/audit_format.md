@@ -91,3 +91,19 @@ Data: 0.Prefix->1.A, 2.PlayerName->1.B, 1.ReturnValue->3.ReturnValue
 **Node types**: `FunctionEntry`, `FunctionResult`, `Event`, `CustomEvent`, `CallFunction`, `Branch`, `Sequence`, `VariableGet`, `VariableSet`, `MacroInstance`, `Timeline`, `Other`.
 
 Reroute/knot nodes are skipped; edges trace through them to the real endpoints.
+
+**Instanced subobjects** (UPROPERTY with the `Instanced` specifier, e.g. `UGameplayEffect::GEComponents`): expanded inline as a nested bullet block instead of a path string. Each subobject is labelled with its `EditorFriendlyName` if present, otherwise its class name; fields are filtered against the class CDO so only overrides appear. Recursion is bounded (cycle guard plus an 8-level depth cap). Example for a GAS gameplay effect:
+
+```markdown
+## Property Overrides
+- GEComponents:
+  1. Grant Abilities While Active (GameplayEffectComponent_GrantAbilitiesWhileActive)
+    - GrantAbilityConfigs:
+      - 1.
+        - Ability: CollectPickupsAbility
+        - Level: 1.0
+        - InputID: -1
+        - RemovalPolicy: Cancel Ability Immediately
+```
+
+Non-instanced object references (regular `UTexture2D*`, asset refs, etc.) keep the existing behavior of emitting just the asset name.
