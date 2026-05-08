@@ -16,6 +16,7 @@ enum class EStaleCheckPhase : uint8
 	BuildingList,
 	BackgroundHash,
 	ProcessingStale,
+	ProcessingStaleWithProgress,
 	Done
 };
 
@@ -72,6 +73,21 @@ private:
 	/** Ticker callback: drives the stale check state machine. */
 	bool OnStaleCheckTick(float DeltaTime);
 
+	/**
+	 * Re-audit a single stale entry on the game thread: LoadObject + Gather + dispatch
+	 * background serialize/write. Shared by the small-batch ticker path and the
+	 * FScopedSlowTask bulk path.
+	 */
+	void ProcessSingleStaleEntry(const FStaleCheckEntry& Entry);
+
+	/**
+	 * Run the entire StaleEntries set synchronously inside an FScopedSlowTask,
+	 * showing a cancelable progress dialog. Used when the stale count is large
+	 * (e.g. schema bump or first run): one big visible operation beats minutes
+	 * of invisible per-frame stutter. Must be called on the game thread.
+	 */
+	void RunStaleProcessingWithProgressDialog();
+
 	/** Walk the audit directory and delete audit files whose source .uasset no longer exists. */
 	void SweepOrphanedAuditFiles();
 
@@ -108,6 +124,7 @@ private:
 	int32 StaleReAuditedCount = 0;
 	int32 StaleFailedCount = 0;
 	int32 AssetsSinceGC = 0;
+	int32 TickFrameCounter = 0;
 	double StaleCheckStartTime = 0.0;
 
 	/** Phase 2: background future that computes hashes and returns stale entries. */
@@ -121,6 +138,20 @@ private:
 	TSet<FString> InFlightPackages;
 
 	// --- Constants ---
-	static constexpr int32 StaleProcessBatchSize = 5;
+	/**
+	 * Small-batch path: process one stale entry every Nth ticker callback.
+	 * LoadObject<UBlueprint> is the indivisible hitch unit (~100-500ms per heavy BP);
+	 * spacing rather than batching keeps individual frame freezes short and gives
+	 * the editor breathing room between hitches.
+	 */
+	static constexpr int32 FramesPerStaleEntry = 3;
+
+	/**
+	 * If the stale count meets or exceeds this, switch from invisible ticker pacing
+	 * to a visible FScopedSlowTask with cancel button. Below this, the per-frame
+	 * stutter is brief enough to remain invisible to most users.
+	 */
+	static constexpr int32 SlowTaskThreshold = 25;
+
 	static constexpr int32 GCInterval = 50;
 };

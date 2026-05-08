@@ -21,6 +21,7 @@
 #include "Audit/AuditExtensionRegistry.h"
 #include "UObject/ObjectSaveContext.h"
 #include "Misc/App.h"
+#include "Misc/ScopedSlowTask.h"
 
 void UBlueprintAuditSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -621,6 +622,7 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 		StaleReAuditedCount = 0;
 		StaleFailedCount = 0;
 		AssetsSinceGC = 0;
+		TickFrameCounter = 0;
 
 		UE_LOG(LogFathomUELink, Display, TEXT("Fathom: Stale check Phase 2 complete: %d stale asset(s) to re-audit"), StaleEntries.Num());
 
@@ -630,160 +632,54 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 			return true;
 		}
 
-		StaleCheckPhase = EStaleCheckPhase::ProcessingStale;
+		// Branch on size: above threshold gets a visible cancelable dialog;
+		// below threshold uses invisible per-frame pacing.
+		StaleCheckPhase = (StaleEntries.Num() >= SlowTaskThreshold)
+			? EStaleCheckPhase::ProcessingStaleWithProgress
+			: EStaleCheckPhase::ProcessingStale;
 		return true;
 	}
 
 	case EStaleCheckPhase::ProcessingStale:
 	{
-		const int32 BatchEnd = FMath::Min(StaleProcessIndex + StaleProcessBatchSize, StaleEntries.Num());
-
-		for (int32 i = StaleProcessIndex; i < BatchEnd; ++i)
+		// Pace one entry every Nth tick. LoadObject is the indivisible hitch unit;
+		// spacing keeps each individual frame freeze short and gives the editor
+		// breathing room between hitches.
+		if (++TickFrameCounter < FramesPerStaleEntry)
 		{
-			const FStaleCheckEntry& StaleEntry = StaleEntries[i];
-			const FString& PackageName = StaleEntry.PackageName;
-			const FString AssetPath = PackageName + TEXT(".") + FPackageName::GetShortName(PackageName);
-
-			switch (StaleEntry.AssetType)
-			{
-			case EAuditAssetType::Blueprint:
-			{
-				UBlueprint* BP = LoadObject<UBlueprint>(nullptr, *AssetPath);
-				if (!BP)
-				{
-					++StaleFailedCount;
-					UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load Blueprint %s for re-audit"), *PackageName);
-					break;
-				}
-#if FATHOM_HAS_CONTROLRIG_BLUEPRINT
-				if (const UControlRigBlueprint* CRBP = Cast<UControlRigBlueprint>(BP))
-				{
-					FControlRigAuditData Data = FBlueprintAuditor::GatherControlRigData(CRBP);
-					DispatchBackgroundWrite(MoveTemp(Data));
-				}
-				else
-#endif
-				{
-					FBlueprintAuditData Data = FBlueprintAuditor::GatherBlueprintData(BP);
-					DispatchBackgroundWrite(MoveTemp(Data));
-				}
-				++StaleReAuditedCount;
-				break;
-			}
-			case EAuditAssetType::DataTable:
-			{
-				UDataTable* DT = LoadObject<UDataTable>(nullptr, *AssetPath);
-				if (!DT)
-				{
-					++StaleFailedCount;
-					UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load DataTable %s for re-audit"), *PackageName);
-					break;
-				}
-				FDataTableAuditData Data = FBlueprintAuditor::GatherDataTableData(DT);
-				DispatchBackgroundWrite(MoveTemp(Data));
-				++StaleReAuditedCount;
-				break;
-			}
-			case EAuditAssetType::DataAsset:
-			{
-				UDataAsset* DA = LoadObject<UDataAsset>(nullptr, *AssetPath);
-				if (!DA)
-				{
-					++StaleFailedCount;
-					UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load DataAsset %s for re-audit"), *PackageName);
-					break;
-				}
-				FDataAssetAuditData Data = FBlueprintAuditor::GatherDataAssetData(DA);
-				DispatchBackgroundWrite(MoveTemp(Data));
-				++StaleReAuditedCount;
-				break;
-			}
-			case EAuditAssetType::UserDefinedStruct:
-			{
-				UUserDefinedStruct* UDS = LoadObject<UUserDefinedStruct>(nullptr, *AssetPath);
-				if (!UDS)
-				{
-					++StaleFailedCount;
-					UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load UserDefinedStruct %s for re-audit"), *PackageName);
-					break;
-				}
-				FUserDefinedStructAuditData Data = FBlueprintAuditor::GatherUserDefinedStructData(UDS);
-				DispatchBackgroundWrite(MoveTemp(Data));
-				++StaleReAuditedCount;
-				break;
-			}
-			case EAuditAssetType::Material:
-			{
-				UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, *AssetPath);
-				if (!Mat)
-				{
-					++StaleFailedCount;
-					UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load Material %s for re-audit"), *PackageName);
-					break;
-				}
-				FMaterialAuditData Data = FMaterialAuditor::GatherData(Mat);
-				DispatchBackgroundWrite(MoveTemp(Data));
-				++StaleReAuditedCount;
-				break;
-			}
-			case EAuditAssetType::BehaviorTree:
-			{
-				UBehaviorTree* BT = LoadObject<UBehaviorTree>(nullptr, *AssetPath);
-				if (!BT)
-				{
-					++StaleFailedCount;
-					UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load BehaviorTree %s for re-audit"), *PackageName);
-					break;
-				}
-				FBehaviorTreeAuditData Data = FBehaviorTreeAuditor::GatherData(BT);
-				DispatchBackgroundWrite(MoveTemp(Data));
-				++StaleReAuditedCount;
-				break;
-			}
-			default:
-			{
-				bool bHandledByExtension = false;
-				for (const auto& Ext : FAuditExtensionRegistry::Get().GetExtensions())
-				{
-					if (Ext.ReAuditStaleEntry)
-					{
-						TOptional<FAuditWriteTask> Task = Ext.ReAuditStaleEntry(StaleEntry);
-						if (Task.IsSet())
-						{
-							DispatchBackgroundWriteTask(MoveTemp(*Task));
-							++StaleReAuditedCount;
-							bHandledByExtension = true;
-							break;
-						}
-					}
-				}
-				if (!bHandledByExtension)
-				{
-					++StaleFailedCount;
-					UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: No handler for stale asset %s (type %d)"),
-						*PackageName, static_cast<int32>(StaleEntry.AssetType));
-				}
-				break;
-			}
-			}
-
-			if (++AssetsSinceGC >= GCInterval)
-			{
-				if (!IsGarbageCollecting())
-				{
-					CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
-				}
-				AssetsSinceGC = 0;
-			}
+			return true;
 		}
+		TickFrameCounter = 0;
 
-		StaleProcessIndex = BatchEnd;
+		ProcessSingleStaleEntry(StaleEntries[StaleProcessIndex]);
+		++StaleProcessIndex;
+
+		if (++AssetsSinceGC >= GCInterval)
+		{
+			if (!IsGarbageCollecting())
+			{
+				CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+			}
+			AssetsSinceGC = 0;
+		}
 
 		if (StaleProcessIndex >= StaleEntries.Num())
 		{
 			StaleCheckPhase = EStaleCheckPhase::Done;
 		}
 
+		return true;
+	}
+
+	case EStaleCheckPhase::ProcessingStaleWithProgress:
+	{
+		// Run synchronously inside an FScopedSlowTask. This blocks the ticker for
+		// the duration of the bulk re-audit, but the slow task pumps Slate during
+		// EnterProgressFrame so the editor remains responsive (dialog redraws,
+		// cancel button works). Used when the stale count is large enough that
+		// invisible ticker pacing would mean minutes of mystery freezes.
+		RunStaleProcessingWithProgressDialog();
+		StaleCheckPhase = EStaleCheckPhase::Done;
 		return true;
 	}
 
@@ -805,6 +701,184 @@ bool UBlueprintAuditSubsystem::OnStaleCheckTick(float DeltaTime)
 
 	default:
 		return false;
+	}
+}
+
+void UBlueprintAuditSubsystem::ProcessSingleStaleEntry(const FStaleCheckEntry& StaleEntry)
+{
+	const FString& PackageName = StaleEntry.PackageName;
+	const FString AssetPath = PackageName + TEXT(".") + FPackageName::GetShortName(PackageName);
+
+	switch (StaleEntry.AssetType)
+	{
+	case EAuditAssetType::Blueprint:
+	{
+		UBlueprint* BP = LoadObject<UBlueprint>(nullptr, *AssetPath);
+		if (!BP)
+		{
+			++StaleFailedCount;
+			UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load Blueprint %s for re-audit"), *PackageName);
+			return;
+		}
+#if FATHOM_HAS_CONTROLRIG_BLUEPRINT
+		if (const UControlRigBlueprint* CRBP = Cast<UControlRigBlueprint>(BP))
+		{
+			FControlRigAuditData Data = FBlueprintAuditor::GatherControlRigData(CRBP);
+			DispatchBackgroundWrite(MoveTemp(Data));
+		}
+		else
+#endif
+		{
+			FBlueprintAuditData Data = FBlueprintAuditor::GatherBlueprintData(BP);
+			DispatchBackgroundWrite(MoveTemp(Data));
+		}
+		++StaleReAuditedCount;
+		return;
+	}
+	case EAuditAssetType::DataTable:
+	{
+		UDataTable* DT = LoadObject<UDataTable>(nullptr, *AssetPath);
+		if (!DT)
+		{
+			++StaleFailedCount;
+			UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load DataTable %s for re-audit"), *PackageName);
+			return;
+		}
+		FDataTableAuditData Data = FBlueprintAuditor::GatherDataTableData(DT);
+		DispatchBackgroundWrite(MoveTemp(Data));
+		++StaleReAuditedCount;
+		return;
+	}
+	case EAuditAssetType::DataAsset:
+	{
+		UDataAsset* DA = LoadObject<UDataAsset>(nullptr, *AssetPath);
+		if (!DA)
+		{
+			++StaleFailedCount;
+			UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load DataAsset %s for re-audit"), *PackageName);
+			return;
+		}
+		FDataAssetAuditData Data = FBlueprintAuditor::GatherDataAssetData(DA);
+		DispatchBackgroundWrite(MoveTemp(Data));
+		++StaleReAuditedCount;
+		return;
+	}
+	case EAuditAssetType::UserDefinedStruct:
+	{
+		UUserDefinedStruct* UDS = LoadObject<UUserDefinedStruct>(nullptr, *AssetPath);
+		if (!UDS)
+		{
+			++StaleFailedCount;
+			UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load UserDefinedStruct %s for re-audit"), *PackageName);
+			return;
+		}
+		FUserDefinedStructAuditData Data = FBlueprintAuditor::GatherUserDefinedStructData(UDS);
+		DispatchBackgroundWrite(MoveTemp(Data));
+		++StaleReAuditedCount;
+		return;
+	}
+	case EAuditAssetType::Material:
+	{
+		UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, *AssetPath);
+		if (!Mat)
+		{
+			++StaleFailedCount;
+			UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load Material %s for re-audit"), *PackageName);
+			return;
+		}
+		FMaterialAuditData Data = FMaterialAuditor::GatherData(Mat);
+		DispatchBackgroundWrite(MoveTemp(Data));
+		++StaleReAuditedCount;
+		return;
+	}
+	case EAuditAssetType::BehaviorTree:
+	{
+		UBehaviorTree* BT = LoadObject<UBehaviorTree>(nullptr, *AssetPath);
+		if (!BT)
+		{
+			++StaleFailedCount;
+			UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: Failed to load BehaviorTree %s for re-audit"), *PackageName);
+			return;
+		}
+		FBehaviorTreeAuditData Data = FBehaviorTreeAuditor::GatherData(BT);
+		DispatchBackgroundWrite(MoveTemp(Data));
+		++StaleReAuditedCount;
+		return;
+	}
+	default:
+	{
+		for (const auto& Ext : FAuditExtensionRegistry::Get().GetExtensions())
+		{
+			if (Ext.ReAuditStaleEntry)
+			{
+				TOptional<FAuditWriteTask> Task = Ext.ReAuditStaleEntry(StaleEntry);
+				if (Task.IsSet())
+				{
+					DispatchBackgroundWriteTask(MoveTemp(*Task));
+					++StaleReAuditedCount;
+					return;
+				}
+			}
+		}
+		++StaleFailedCount;
+		UE_LOG(LogFathomUELink, Warning, TEXT("Fathom: No handler for stale asset %s (type %d)"),
+			*PackageName, static_cast<int32>(StaleEntry.AssetType));
+		return;
+	}
+	}
+}
+
+void UBlueprintAuditSubsystem::RunStaleProcessingWithProgressDialog()
+{
+	const int32 Total = StaleEntries.Num();
+	if (Total == 0)
+	{
+		return;
+	}
+
+	FScopedSlowTask SlowTask(
+		static_cast<float>(Total),
+		NSLOCTEXT("Fathom", "ReAuditingAssets",
+			"Fathom: Re-auditing assets after schema or content update..."));
+	SlowTask.MakeDialog(/*bShowCancelButton=*/ true);
+
+	int32 CancelledAt = INDEX_NONE;
+	for (int32 i = 0; i < Total; ++i)
+	{
+		if (SlowTask.ShouldCancel())
+		{
+			CancelledAt = i;
+			break;
+		}
+
+		const FStaleCheckEntry& Entry = StaleEntries[i];
+		SlowTask.EnterProgressFrame(1.0f, FText::Format(
+			NSLOCTEXT("Fathom", "ReAuditingAssetFmt",
+				"Auditing {0} ({1}/{2})\n"
+				"Fathom: one-time re-audit after an audit-format update.\n"
+				"This won't run on every editor launch."),
+			FText::FromString(FPackageName::GetShortName(Entry.PackageName)),
+			FText::AsNumber(i + 1),
+			FText::AsNumber(Total)));
+
+		ProcessSingleStaleEntry(Entry);
+		StaleProcessIndex = i + 1;
+
+		if (++AssetsSinceGC >= GCInterval)
+		{
+			if (!IsGarbageCollecting())
+			{
+				CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+			}
+			AssetsSinceGC = 0;
+		}
+	}
+
+	if (CancelledAt != INDEX_NONE)
+	{
+		UE_LOG(LogFathomUELink, Warning,
+			TEXT("Fathom: Re-audit cancelled by user at %d/%d. Remaining assets will be re-checked on next editor launch."),
+			CancelledAt, Total);
 	}
 }
 
