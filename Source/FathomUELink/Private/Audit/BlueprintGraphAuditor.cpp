@@ -36,7 +36,16 @@
 
 namespace
 {
-	/** Follow pin connections through UK2Node_Knot reroute nodes to find real endpoints. */
+	/**
+	 * Follow pin connections through UK2Node_Knot reroute nodes to find real
+	 * endpoints. Pin is the original walking pin (an output pin when called
+	 * from edge enumeration); we walk downstream through knot chains.
+	 *
+	 * To continue downstream past a knot we need the knot's same-direction
+	 * pin (matching Pin->Direction): for an Output Pin, the knot's Output
+	 * pin, whose own LinkedTo gives the next downstream input pins. Picking
+	 * the opposite direction would walk back upstream and produce self-edges.
+	 */
 	TArray<UEdGraphPin*> TraceThroughKnots(UEdGraphPin* Pin, TSet<UEdGraphNode*>& Visited)
 	{
 		TArray<UEdGraphPin*> Result;
@@ -53,10 +62,10 @@ namespace
 					continue;
 				}
 
-				// Find the output pin on the knot and recurse
+				// Recurse from the knot's same-direction pin to continue downstream.
 				for (UEdGraphPin* KnotPin : Knot->Pins)
 				{
-					if (KnotPin->Direction == Pin->Direction)
+					if (KnotPin->Direction != Pin->Direction)
 					{
 						continue;
 					}
