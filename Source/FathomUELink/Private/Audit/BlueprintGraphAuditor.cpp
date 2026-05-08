@@ -775,168 +775,432 @@ FString FBlueprintGraphAuditor::SerializeToMarkdown(const FBlueprintAuditData& D
 	return Result;
 }
 
-FString FBlueprintGraphAuditor::SerializeGraphToMarkdown(const FGraphAuditData& Data, const FString& Prefix)
-{
-	FString Result;
-	Result.Reserve(2048);
+// ============================================================================
+// Graph partitioning helpers (issue #38: separate event-graph entry-point flows)
+// ============================================================================
 
-	// --- Heading ---
-	if (Prefix == TEXT("Function"))
+namespace
+{
+	/**
+	 * Build a "## " / "### " heading prefix at the given level. Caps at h6.
+	 */
+	FString MakeHeadingHashes(int32 Level)
 	{
-		// ## Function: Name(params) -> returns
-		Result += TEXT("## Function: ");
-		Result += Data.Name;
-		Result += TEXT("(");
-		for (int32 i = 0; i < Data.Inputs.Num(); ++i)
-		{
-			if (i > 0) Result += TEXT(", ");
-			Result += Data.Inputs[i].Name;
-			Result += TEXT(": ");
-			Result += Data.Inputs[i].Type;
-		}
-		Result += TEXT(")");
-		if (Data.Outputs.Num() > 0)
-		{
-			Result += TEXT(" -> ");
-			for (int32 i = 0; i < Data.Outputs.Num(); ++i)
-			{
-				if (i > 0) Result += TEXT(", ");
-				Result += Data.Outputs[i].Name;
-				Result += TEXT(": ");
-				Result += Data.Outputs[i].Type;
-			}
-		}
-		Result += TEXT("\n");
+		const int32 N = FMath::Clamp(Level, 1, 6);
+		FString Out;
+		Out.Reserve(N + 1);
+		for (int32 i = 0; i < N; ++i) Out += TEXT("#");
+		Out += TEXT(" ");
+		return Out;
 	}
-	else if (Prefix == TEXT("Macro"))
+
+	/**
+	 * A node is an exec entry iff it has at least one outgoing exec edge AND zero
+	 * incoming exec edges. This catches Event / CustomEvent / FunctionEntry /
+	 * Tunnel(Inputs) / input-action Other nodes uniformly via topology.
+	 */
+	TArray<int32> FindEntryNodeIds(const FGraphAuditData& Data)
 	{
-		Result += TEXT("## Macro: ");
-		Result += Data.Name;
-		if (Data.Inputs.Num() > 0 || Data.Outputs.Num() > 0)
+		TSet<int32> WithIncomingExec;
+		TSet<int32> WithOutgoingExec;
+		for (const FExecEdge& E : Data.ExecFlows)
 		{
-			Result += TEXT("(");
-			for (int32 i = 0; i < Data.Inputs.Num(); ++i)
+			WithIncomingExec.Add(E.TargetNodeId);
+			WithOutgoingExec.Add(E.SourceNodeId);
+		}
+		TArray<int32> Entries;
+		for (const FNodeAuditData& N : Data.Nodes)
+		{
+			if (WithOutgoingExec.Contains(N.Id) && !WithIncomingExec.Contains(N.Id))
 			{
-				if (i > 0) Result += TEXT(", ");
-				Result += Data.Inputs[i].Name;
-				Result += TEXT(": ");
-				Result += Data.Inputs[i].Type;
+				Entries.Add(N.Id);
 			}
-			Result += TEXT(")");
-			if (Data.Outputs.Num() > 0)
+		}
+		Entries.Sort();
+		return Entries;
+	}
+
+	struct FGraphPartition
+	{
+		TArray<int32> EntryIds;
+		TMap<int32, TSet<int32>> NodesByEntry;       // entry id -> nodes in section
+		TMap<int32, TArray<int32>> EntriesPerNode;   // node id -> sorted list of entries that own it
+		TArray<int32> OrphanNodeIds;                 // not reachable from any entry
+	};
+
+	/**
+	 * For each entry: forward-BFS along exec to collect reachable exec nodes, then
+	 * close over data-input dependencies (recursing through pure sources). Records
+	 * both per-entry membership and the inverted entries-per-node map for shared
+	 * annotations.
+	 */
+	FGraphPartition ComputePartition(const FGraphAuditData& Data, const TArray<int32>& EntryIds)
+	{
+		FGraphPartition Part;
+		Part.EntryIds = EntryIds;
+
+		TMap<int32, TArray<int32>> OutExec;
+		TMap<int32, TArray<int32>> InData;
+		for (const FExecEdge& E : Data.ExecFlows)
+		{
+			OutExec.FindOrAdd(E.SourceNodeId).Add(E.TargetNodeId);
+		}
+		for (const FDataEdge& D : Data.DataFlows)
+		{
+			InData.FindOrAdd(D.TargetNodeId).Add(D.SourceNodeId);
+		}
+
+		// "Pure" for the closure-recursion decision: marked pure OR not part of any exec edge.
+		TSet<int32> AnyExec;
+		for (const FExecEdge& E : Data.ExecFlows)
+		{
+			AnyExec.Add(E.SourceNodeId);
+			AnyExec.Add(E.TargetNodeId);
+		}
+		TMap<int32, bool> IsPure;
+		for (const FNodeAuditData& N : Data.Nodes)
+		{
+			IsPure.Add(N.Id, N.bPure || !AnyExec.Contains(N.Id));
+		}
+
+		for (int32 Entry : EntryIds)
+		{
+			TSet<int32> Section;
+			TArray<int32> Queue;
+			Section.Add(Entry);
+			Queue.Add(Entry);
+
+			// Forward exec BFS.
+			while (Queue.Num() > 0)
 			{
-				Result += TEXT(" -> ");
-				for (int32 i = 0; i < Data.Outputs.Num(); ++i)
+				const int32 N = Queue.Pop(EAllowShrinking::No);
+				if (const TArray<int32>* Outs = OutExec.Find(N))
 				{
-					if (i > 0) Result += TEXT(", ");
-					Result += Data.Outputs[i].Name;
-					Result += TEXT(": ");
-					Result += Data.Outputs[i].Type;
+					for (int32 T : *Outs)
+					{
+						bool bAlready = false;
+						Section.Add(T, &bAlready);
+						if (!bAlready) Queue.Add(T);
+					}
 				}
 			}
+
+			// Data-input closure: for each node currently in Section, pull its data
+			// sources. Recurse through pure sources only (impure nodes anchor on their
+			// own exec chain elsewhere).
+			TArray<int32> DataQueue = Section.Array();
+			while (DataQueue.Num() > 0)
+			{
+				const int32 N = DataQueue.Pop(EAllowShrinking::No);
+				if (const TArray<int32>* Sources = InData.Find(N))
+				{
+					for (int32 S : *Sources)
+					{
+						bool bAlready = false;
+						Section.Add(S, &bAlready);
+						if (!bAlready && IsPure.FindRef(S))
+						{
+							DataQueue.Add(S);
+						}
+					}
+				}
+			}
+
+			for (int32 N : Section)
+			{
+				Part.EntriesPerNode.FindOrAdd(N).Add(Entry);
+			}
+			Part.NodesByEntry.Add(Entry, MoveTemp(Section));
 		}
-		Result += TEXT("\n");
-	}
-	else if (Prefix == TEXT("Collapsed"))
-	{
-		Result += FString::Printf(TEXT("### Collapsed: %s\n"), *Data.Name);
-	}
-	else
-	{
-		Result += FString::Printf(TEXT("## %s\n"), *Data.Name);
+
+		// Sort entries-per-node lists for deterministic shared-annotation output.
+		for (auto& Kvp : Part.EntriesPerNode)
+		{
+			Kvp.Value.Sort();
+		}
+
+		// Orphans = any node not in any entry's section (typically standalone comments
+		// or disconnected dead code).
+		for (const FNodeAuditData& N : Data.Nodes)
+		{
+			if (!Part.EntriesPerNode.Contains(N.Id))
+			{
+				Part.OrphanNodeIds.Add(N.Id);
+			}
+		}
+		return Part;
 	}
 
-	// --- Node table ---
-	if (Data.Nodes.Num() > 0)
+	/** Display name for an entry node, used in shared-annotation lists. */
+	FString MakeEntryDisplayName(const FNodeAuditData& Node)
 	{
-		Result += TEXT("| Id | Type | Name | Details |\n");
-		Result += TEXT("|----|------|------|---------|\n");
+		return Node.Name.IsEmpty() ? Node.Type : Node.Name;
+	}
+
+	/** Render one node-table row. SharedWith is empty for the flat / single-entry case. */
+	void AppendNodeRow(FString& Out, const FNodeAuditData& Node, const TArray<FString>& SharedWith)
+	{
+		FString Details;
+		if (!Node.Target.IsEmpty())
+		{
+			Details += Node.Target;
+		}
+		if (Node.bPure)
+		{
+			if (!Details.IsEmpty()) Details += TEXT(", ");
+			Details += TEXT("pure");
+		}
+		if (Node.bLatent)
+		{
+			if (!Details.IsEmpty()) Details += TEXT(", ");
+			Details += TEXT("latent");
+		}
+		if (!Node.bIsNative && Node.Type == TEXT("CallFunction"))
+		{
+			if (!Details.IsEmpty()) Details += TEXT(", ");
+			Details += TEXT("not-native");
+		}
+		for (const FDefaultInputData& Input : Node.DefaultInputs)
+		{
+			if (!Details.IsEmpty()) Details += TEXT(", ");
+			Details += FString::Printf(TEXT("%s=%s"), *Input.Name, *Input.Value);
+		}
+		if (!Node.CompilerMessage.IsEmpty())
+		{
+			if (!Details.IsEmpty()) Details += TEXT(", ");
+			Details += Node.CompilerMessage;
+		}
+		if (SharedWith.Num() > 0)
+		{
+			if (!Details.IsEmpty()) Details += TEXT(", ");
+			Details += TEXT("[shared with: ");
+			for (int32 i = 0; i < SharedWith.Num(); ++i)
+			{
+				if (i > 0) Details += TEXT(", ");
+				Details += SharedWith[i];
+			}
+			Details += TEXT("]");
+		}
+		Out += FString::Printf(TEXT("| %d | %s | %s | %s |\n"),
+			Node.Id, *Node.Type, *Node.Name, *Details);
+	}
+
+	/**
+	 * Render a node table for a subset of node ids (preserving Data.Nodes order, which
+	 * is id-ordered). When EntriesPerNode is non-null and a node is shared across
+	 * multiple entries, the row gets a "[shared with: ...]" annotation excluding the
+	 * current section's entry id.
+	 */
+	void AppendNodeTable(FString& Out,
+	                     const FGraphAuditData& Data,
+	                     const TSet<int32>& NodeIds,
+	                     const TMap<int32, FString>& EntryDisplayNameById,
+	                     const TMap<int32, TArray<int32>>* EntriesPerNode,
+	                     int32 OmitFromSharedListId)
+	{
+		if (NodeIds.Num() == 0) return;
+		Out += TEXT("| Id | Type | Name | Details |\n");
+		Out += TEXT("|----|------|------|---------|\n");
 		for (const FNodeAuditData& Node : Data.Nodes)
 		{
-			// Build Details column: target, flags, defaults
-			FString Details;
-			if (!Node.Target.IsEmpty())
+			if (!NodeIds.Contains(Node.Id)) continue;
+			TArray<FString> SharedWith;
+			if (EntriesPerNode)
 			{
-				Details += Node.Target;
-			}
-			if (Node.bPure)
-			{
-				if (!Details.IsEmpty()) Details += TEXT(", ");
-				Details += TEXT("pure");
-			}
-			if (Node.bLatent)
-			{
-				if (!Details.IsEmpty()) Details += TEXT(", ");
-				Details += TEXT("latent");
-			}
-			if (!Node.bIsNative && Node.Type == TEXT("CallFunction"))
-			{
-				if (!Details.IsEmpty()) Details += TEXT(", ");
-				Details += TEXT("not-native");
-			}
-			if (Node.DefaultInputs.Num() > 0)
-			{
-				for (const FDefaultInputData& Input : Node.DefaultInputs)
+				if (const TArray<int32>* Entries = EntriesPerNode->Find(Node.Id))
 				{
-					if (!Details.IsEmpty()) Details += TEXT(", ");
-					Details += FString::Printf(TEXT("%s=%s"), *Input.Name, *Input.Value);
+					if (Entries->Num() > 1)
+					{
+						for (int32 EId : *Entries)
+						{
+							if (EId == OmitFromSharedListId) continue;
+							SharedWith.Add(EntryDisplayNameById.FindRef(EId));
+						}
+					}
 				}
 			}
-			if (!Node.CompilerMessage.IsEmpty())
-			{
-				if (!Details.IsEmpty()) Details += TEXT(", ");
-				Details += Node.CompilerMessage;
-			}
-			Result += FString::Printf(TEXT("| %d | %s | %s | %s |\n"),
-				Node.Id, *Node.Type, *Node.Name, *Details);
+			AppendNodeRow(Out, Node, SharedWith);
 		}
 	}
 
-	// --- Exec edges (compact one-liners) ---
-	if (Data.ExecFlows.Num() > 0)
+	/**
+	 * Append "Exec: ..." and "Data: ..." lines limited to edges where both endpoints
+	 * are in NodeIds. Pin-name elision for "then" mirrors the flat renderer.
+	 */
+	void AppendExecAndDataLines(FString& Out, const FGraphAuditData& Data, const TSet<int32>& NodeIds)
 	{
-		Result += TEXT("\nExec: ");
-		for (int32 i = 0; i < Data.ExecFlows.Num(); ++i)
+		bool bWroteExec = false;
+		for (const FExecEdge& E : Data.ExecFlows)
 		{
-			if (i > 0) Result += TEXT(", ");
-			const FExecEdge& Edge = Data.ExecFlows[i];
-			// Omit pin name when it's "then" (case-insensitive)
-			if (Edge.SourcePinName.Equals(TEXT("then"), ESearchCase::IgnoreCase))
+			if (!NodeIds.Contains(E.SourceNodeId) || !NodeIds.Contains(E.TargetNodeId)) continue;
+			if (!bWroteExec)
 			{
-				Result += FString::Printf(TEXT("%d->%d"), Edge.SourceNodeId, Edge.TargetNodeId);
+				Out += TEXT("\nExec: ");
+				bWroteExec = true;
 			}
 			else
 			{
-				Result += FString::Printf(TEXT("%d-[%s]->%d"),
-					Edge.SourceNodeId, *Edge.SourcePinName, Edge.TargetNodeId);
+				Out += TEXT(", ");
+			}
+			if (E.SourcePinName.Equals(TEXT("then"), ESearchCase::IgnoreCase))
+			{
+				Out += FString::Printf(TEXT("%d->%d"), E.SourceNodeId, E.TargetNodeId);
+			}
+			else
+			{
+				Out += FString::Printf(TEXT("%d-[%s]->%d"), E.SourceNodeId, *E.SourcePinName, E.TargetNodeId);
 			}
 		}
-		Result += TEXT("\n");
-	}
+		if (bWroteExec) Out += TEXT("\n");
 
-	// --- Data edges (compact one-liners) ---
-	if (Data.DataFlows.Num() > 0)
-	{
-		Result += TEXT("Data: ");
-		for (int32 i = 0; i < Data.DataFlows.Num(); ++i)
+		bool bWroteData = false;
+		for (const FDataEdge& D : Data.DataFlows)
 		{
-			if (i > 0) Result += TEXT(", ");
-			const FDataEdge& Edge = Data.DataFlows[i];
-			Result += FString::Printf(TEXT("%d.%s->%d.%s"),
-				Edge.SourceNodeId, *Edge.SourcePinName,
-				Edge.TargetNodeId, *Edge.TargetPinName);
+			if (!NodeIds.Contains(D.SourceNodeId) || !NodeIds.Contains(D.TargetNodeId)) continue;
+			if (!bWroteData)
+			{
+				Out += TEXT("Data: ");
+				bWroteData = true;
+			}
+			else
+			{
+				Out += TEXT(", ");
+			}
+			Out += FString::Printf(TEXT("%d.%s->%d.%s"),
+				D.SourceNodeId, *D.SourcePinName, D.TargetNodeId, *D.TargetPinName);
 		}
-		Result += TEXT("\n");
+		if (bWroteData) Out += TEXT("\n");
 	}
 
-	// --- Collapsed sub-graphs ---
-	for (const FGraphAuditData& Sub : Data.SubGraphs)
+	/** Forward declaration so internal recursion can target the level-aware variant. */
+	FString SerializeGraphAtLevel(const FGraphAuditData& Data, const FString& Prefix, int32 HeadingLevel);
+
+	void AppendGraphHeading(FString& Out, const FGraphAuditData& Data, const FString& Prefix, int32 HeadingLevel)
 	{
-		Result += TEXT("\n");
-		Result += SerializeGraphToMarkdown(Sub, TEXT("Collapsed"));
+		const FString H = MakeHeadingHashes(HeadingLevel);
+
+		if (Prefix == TEXT("Function"))
+		{
+			Out += H + TEXT("Function: ") + Data.Name + TEXT("(");
+			for (int32 i = 0; i < Data.Inputs.Num(); ++i)
+			{
+				if (i > 0) Out += TEXT(", ");
+				Out += Data.Inputs[i].Name + TEXT(": ") + Data.Inputs[i].Type;
+			}
+			Out += TEXT(")");
+			if (Data.Outputs.Num() > 0)
+			{
+				Out += TEXT(" -> ");
+				for (int32 i = 0; i < Data.Outputs.Num(); ++i)
+				{
+					if (i > 0) Out += TEXT(", ");
+					Out += Data.Outputs[i].Name + TEXT(": ") + Data.Outputs[i].Type;
+				}
+			}
+			Out += TEXT("\n");
+		}
+		else if (Prefix == TEXT("Macro"))
+		{
+			Out += H + TEXT("Macro: ") + Data.Name;
+			if (Data.Inputs.Num() > 0 || Data.Outputs.Num() > 0)
+			{
+				Out += TEXT("(");
+				for (int32 i = 0; i < Data.Inputs.Num(); ++i)
+				{
+					if (i > 0) Out += TEXT(", ");
+					Out += Data.Inputs[i].Name + TEXT(": ") + Data.Inputs[i].Type;
+				}
+				Out += TEXT(")");
+				if (Data.Outputs.Num() > 0)
+				{
+					Out += TEXT(" -> ");
+					for (int32 i = 0; i < Data.Outputs.Num(); ++i)
+					{
+						if (i > 0) Out += TEXT(", ");
+						Out += Data.Outputs[i].Name + TEXT(": ") + Data.Outputs[i].Type;
+					}
+				}
+			}
+			Out += TEXT("\n");
+		}
+		else if (Prefix == TEXT("Collapsed"))
+		{
+			Out += FString::Printf(TEXT("%sCollapsed: %s\n"), *H, *Data.Name);
+		}
+		else
+		{
+			Out += FString::Printf(TEXT("%s%s\n"), *H, *Data.Name);
+		}
 	}
 
-	return Result;
+	FString SerializeGraphAtLevel(const FGraphAuditData& Data, const FString& Prefix, int32 HeadingLevel)
+	{
+		FString Result;
+		Result.Reserve(2048);
+
+		AppendGraphHeading(Result, Data, Prefix, HeadingLevel);
+
+		// Decide whether to partition by entry node. Functions/macros and simple
+		// single-event graphs fall back to the original flat layout.
+		const TArray<int32> EntryIds = FindEntryNodeIds(Data);
+		const bool bPartition = EntryIds.Num() > 1;
+
+		if (!bPartition)
+		{
+			TSet<int32> AllIds;
+			AllIds.Reserve(Data.Nodes.Num());
+			for (const FNodeAuditData& N : Data.Nodes) AllIds.Add(N.Id);
+			AppendNodeTable(Result, Data, AllIds, /*EntryNames=*/{}, /*EntriesPerNode=*/nullptr, INDEX_NONE);
+			AppendExecAndDataLines(Result, Data, AllIds);
+		}
+		else
+		{
+			const FGraphPartition Part = ComputePartition(Data, EntryIds);
+
+			TMap<int32, FString> EntryDisplayNameById;
+			for (const FNodeAuditData& N : Data.Nodes)
+			{
+				if (Part.NodesByEntry.Contains(N.Id))
+				{
+					EntryDisplayNameById.Add(N.Id, MakeEntryDisplayName(N));
+				}
+			}
+
+			const FString EntryHeading = MakeHeadingHashes(HeadingLevel + 1);
+			for (int32 EId : EntryIds)
+			{
+				Result += FString::Printf(TEXT("\n%sEntry: %s\n"),
+					*EntryHeading, *EntryDisplayNameById[EId]);
+				const TSet<int32>& Section = Part.NodesByEntry[EId];
+				AppendNodeTable(Result, Data, Section, EntryDisplayNameById, &Part.EntriesPerNode, EId);
+				AppendExecAndDataLines(Result, Data, Section);
+			}
+
+			if (Part.OrphanNodeIds.Num() > 0)
+			{
+				Result += FString::Printf(TEXT("\n%sOther Nodes\n"), *EntryHeading);
+				const TSet<int32> OrphanSet(Part.OrphanNodeIds);
+				AppendNodeTable(Result, Data, OrphanSet, EntryDisplayNameById, /*EntriesPerNode=*/nullptr, INDEX_NONE);
+				// Orphans have no edges to other nodes; AppendExecAndDataLines would emit nothing.
+			}
+		}
+
+		// Recursive sub-graphs nest one heading level deeper.
+		for (const FGraphAuditData& Sub : Data.SubGraphs)
+		{
+			Result += TEXT("\n");
+			Result += SerializeGraphAtLevel(Sub, TEXT("Collapsed"), HeadingLevel + 1);
+		}
+
+		return Result;
+	}
+}
+
+FString FBlueprintGraphAuditor::SerializeGraphToMarkdown(const FGraphAuditData& Data, const FString& Prefix)
+{
+	// Top-level graphs (EventGraph / Function / Macro) render at heading level 2.
+	// Collapsed sub-graphs reached via the recursion bump to level 3+.
+	return SerializeGraphAtLevel(Data, Prefix, 2);
 }
 
 FString FBlueprintGraphAuditor::SerializeWidgetToMarkdown(const FWidgetAuditData& Data, int32 Indent)
