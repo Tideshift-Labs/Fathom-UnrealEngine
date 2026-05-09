@@ -6,6 +6,7 @@
 #include "StateTreeEditorNode.h"
 #include "StateTreeTypes.h"
 #include "StateTreeTasksStatus.h"
+#include "Misc/EngineVersionComparison.h"
 #include "Audit/AuditFileUtils.h"
 #include "Audit/AuditHelpers.h"
 #include "FathomUELinkModule.h"
@@ -111,7 +112,10 @@ static FString ExpressionOperandToString(EStateTreeExpressionOperand Operand)
 	case EStateTreeExpressionOperand::Copy:     return TEXT("");
 	case EStateTreeExpressionOperand::And:      return TEXT("AND");
 	case EStateTreeExpressionOperand::Or:       return TEXT("OR");
+#if UE_VERSION_NEWER_THAN_OR_EQUAL(5, 7, 0)
+	// Multiply was added to EStateTreeExpressionOperand in UE 5.7.
 	case EStateTreeExpressionOperand::Multiply: return TEXT("MUL");
+#endif
 	default:                                    return TEXT("");
 	}
 }
