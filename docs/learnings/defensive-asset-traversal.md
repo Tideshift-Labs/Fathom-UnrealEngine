@@ -38,10 +38,19 @@ Recursive walkers over parent/child object references (BehaviorTree composites, 
 
 **Guards**: thread a `TSet<const T*>& Visited` through each recursive walker using the `Visited.Add(Ptr, &bAlreadyVisited)` idiom (single hash lookup). The Blueprint knot trace and ControlRig reroute trace already had this; BehaviorTree, Blackboard, and StateTree walks now do too.
 
+## Crash class 4: Property chains resolved against the wrong container
+
+Found via a real editor crash on startup auditing PCG graphs (Electric Dreams sample). Some engine systems cache `FProperty` chains that do **not** belong to the object you hold. PCG's `FPCGSettingsOverridableParam::Properties` is the example: for subgraph nodes the chain points into the referenced subgraph's user-parameter property bag, and for Blueprint elements into the Blueprint class, not into the `UPCGSettings` object. Walking such a chain with `ContainerPtrToValuePtr` against the wrong container reads garbage memory; the resulting fake `UObject*` then crashes inside `ExportText` (`GetExportPath` dereferencing a garbage class pointer). Nothing is null and no type metadata is broken, so crash classes 1 and 2 guards do not catch it.
+
+**Guards**: before walking a cached property chain, verify ownership: `Container->GetClass()->IsChildOf(Chain[0]->GetOwnerStruct())`. Skip (or resolve against the correct owner) when it fails. See `GatherSettingsValues` in `PCGGraphAuditor.cpp`.
+
+A related case in the same family: engine accessors that recurse through reference chains without a cycle guard (`UPCGGraphInstance::GetGraph()` walks instance-of-instance chains). Editing code prevents cycles, but corrupted assets can still contain them, and the stack overflow then happens inside engine code where our visited-set guards cannot reach. Replicate the walk locally with a visited set instead of calling the engine accessor (`ResolveConcreteGraph` in `PCGGraphAuditor.cpp`).
+
 ## Rules of thumb for new auditors
 
 1. Never range-for over an engine pointer array (`Nodes`, `Pins`, `LinkedTo`, `Children`) without a null skip on the element.
 2. Prefer `*Unchecked()` accessor variants where they exist; the checked ones are fatal asserts.
 3. Call `HasBrokenTypeMetadata` before `Identical` / `ExportTextItem` / `GetCPPType` on any property that came from user content.
-4. Any recursive walk over object references needs a visited set, even if the structure is "always" a tree.
-5. Skipping quietly is fine for diff-style sections; emit a placeholder where output is positional (numbered columns, table rows).
+4. Any recursive walk over object references needs a visited set, even if the structure is "always" a tree. This includes engine accessors that recurse internally; replicate them locally if they have no guard.
+5. Skipping quietly is fine for diff-style sections; emit a placeholder where output is positional (numbered columns, table rows) or referenced elsewhere (parameter names used by override pins).
+6. A cached `FProperty` chain is only as trustworthy as its owner. Verify `GetOwnerStruct()` against the container's class before any `ContainerPtrToValuePtr` walk; valid-looking chains can belong to a different object entirely.

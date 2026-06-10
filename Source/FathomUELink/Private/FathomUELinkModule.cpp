@@ -37,6 +37,11 @@ void FFathomUELinkModule::LoadOptionalModules()
 	LoadOptionalModuleIfPluginsPresent(
 		TEXT("FathomUELinkStateTree"),
 		StateTreeRequiredPlugins);
+
+	const FName PCGRequiredPlugins[] = { TEXT("PCG") };
+	LoadOptionalModuleIfPluginsPresent(
+		TEXT("FathomUELinkPCG"),
+		PCGRequiredPlugins);
 }
 
 void FFathomUELinkModule::LoadOptionalModuleIfPluginsPresent(

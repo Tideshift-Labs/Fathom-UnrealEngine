@@ -32,6 +32,11 @@
 			"Name": "StateTree",
 			"Enabled": false,
 			"Optional": true
+		},
+		{
+			"Name": "PCG",
+			"Enabled": false,
+			"Optional": true
 		}
 	],
 	"Modules": [
@@ -42,6 +47,11 @@
 		},
 		{
 			"Name": "FathomUELinkStateTree",
+			"Type": "Editor",
+			"LoadingPhase": "None"
+		},
+		{
+			"Name": "FathomUELinkPCG",
 			"Type": "Editor",
 			"LoadingPhase": "None"
 		}

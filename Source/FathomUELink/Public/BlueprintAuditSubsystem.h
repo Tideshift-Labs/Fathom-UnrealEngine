@@ -30,7 +30,8 @@ enum class EAuditAssetType : uint8
 	ControlRig,
 	Material,
 	BehaviorTree,
-	StateTree
+	StateTree,
+	PCG
 };
 
 /** Per-entry data collected in Phase 1, consumed in Phase 2/3. */
