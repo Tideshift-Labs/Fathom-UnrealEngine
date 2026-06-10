@@ -241,6 +241,79 @@ FString FathomAuditHelpers::CleanExportedValue(const FString& Raw)
 }
 
 // ---------------------------------------------------------------------------
+// HasBrokenTypeMetadata / GetSafeCPPType
+// ---------------------------------------------------------------------------
+
+bool FathomAuditHelpers::HasBrokenTypeMetadata(const FProperty* Prop)
+{
+	if (!Prop)
+	{
+		return true;
+	}
+	// Most-derived classes first: FClassProperty derives from FObjectProperty,
+	// FSoftClassProperty from FSoftObjectProperty/FObjectPropertyBase.
+	if (const FSoftClassProperty* SoftClassProp = CastField<FSoftClassProperty>(Prop))
+	{
+		return SoftClassProp->MetaClass == nullptr || SoftClassProp->PropertyClass == nullptr;
+	}
+	if (const FClassProperty* ClassProp = CastField<FClassProperty>(Prop))
+	{
+		return ClassProp->MetaClass == nullptr || ClassProp->PropertyClass == nullptr;
+	}
+	if (const FObjectPropertyBase* ObjProp = CastField<FObjectPropertyBase>(Prop))
+	{
+		return ObjProp->PropertyClass == nullptr;
+	}
+	if (const FInterfaceProperty* IfaceProp = CastField<FInterfaceProperty>(Prop))
+	{
+		return IfaceProp->InterfaceClass == nullptr;
+	}
+	if (const FEnumProperty* EnumProp = CastField<FEnumProperty>(Prop))
+	{
+		return EnumProp->GetEnum() == nullptr;
+	}
+	if (const FStructProperty* StructProp = CastField<FStructProperty>(Prop))
+	{
+		if (StructProp->Struct == nullptr)
+		{
+			return true;
+		}
+		// A struct type cannot contain itself at the C++ level, so this
+		// recursion terminates.
+		for (TFieldIterator<FProperty> It(StructProp->Struct); It; ++It)
+		{
+			if (HasBrokenTypeMetadata(*It))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+	if (const FArrayProperty* ArrayProp = CastField<FArrayProperty>(Prop))
+	{
+		return HasBrokenTypeMetadata(ArrayProp->Inner);
+	}
+	if (const FSetProperty* SetProp = CastField<FSetProperty>(Prop))
+	{
+		return HasBrokenTypeMetadata(SetProp->ElementProp);
+	}
+	if (const FMapProperty* MapProp = CastField<FMapProperty>(Prop))
+	{
+		return HasBrokenTypeMetadata(MapProp->KeyProp) || HasBrokenTypeMetadata(MapProp->ValueProp);
+	}
+	return false;
+}
+
+FString FathomAuditHelpers::GetSafeCPPType(const FProperty* Prop, FString* ExtendedTypeText)
+{
+	if (HasBrokenTypeMetadata(Prop))
+	{
+		return TEXT("Unknown");
+	}
+	return Prop->GetCPPType(ExtendedTypeText);
+}
+
+// ---------------------------------------------------------------------------
 // StripObjectPathToAssetName / FormatPropertyValue
 // ---------------------------------------------------------------------------
 
@@ -332,6 +405,13 @@ namespace FathomAuditHelpers
 	/** Format a scalar (non-array, non-struct, non-set, non-map) property at value level. */
 	static FString FormatScalarProperty(const FProperty* Prop, const void* ValuePtr)
 	{
+		// Broken type metadata (deleted class/enum assets) makes ExportTextItem
+		// check()-fail or dereference null inside the engine.
+		if (!Prop || !ValuePtr || HasBrokenTypeMetadata(Prop))
+		{
+			return TEXT("(unavailable)");
+		}
+
 		FString Exported;
 		Prop->ExportTextItem_Direct(Exported, ValuePtr, nullptr, nullptr, PPF_None);
 
@@ -645,6 +725,12 @@ namespace FathomAuditHelpers
 			{
 				continue;
 			}
+			// Identical() dereferences type metadata (e.g. FStructProperty::Struct)
+			// unguarded; skip fields whose backing types were deleted.
+			if (HasBrokenTypeMetadata(Field))
+			{
+				continue;
+			}
 
 			const void* FieldPtr = Field->ContainerPtrToValuePtr<void>(StructPtr);
 			const void* DefaultFieldPtr = Field->ContainerPtrToValuePtr<void>(DefaultBuffer.GetData());
@@ -698,6 +784,10 @@ namespace FathomAuditHelpers
 		{
 			const FProperty* Field = *FieldIt;
 			if (Field->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated))
+			{
+				continue;
+			}
+			if (HasBrokenTypeMetadata(Field))
 			{
 				continue;
 			}
@@ -803,6 +893,10 @@ namespace FathomAuditHelpers
 				continue;
 			}
 			if (!Field->HasAnyPropertyFlags(CPF_Edit | CPF_BlueprintVisible))
+			{
+				continue;
+			}
+			if (HasBrokenTypeMetadata(Field))
 			{
 				continue;
 			}

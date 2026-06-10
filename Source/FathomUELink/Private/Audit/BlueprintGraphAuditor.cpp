@@ -187,6 +187,13 @@ FBlueprintAuditData FBlueprintGraphAuditor::GatherBlueprintData(const UBlueprint
 					continue;
 				}
 
+				// Identical/ExportText crash on properties whose backing type
+				// asset (class, enum, struct) was deleted.
+				if (FathomAuditHelpers::HasBrokenTypeMetadata(Prop))
+				{
+					continue;
+				}
+
 				const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(CDO);
 				const void* SuperValuePtr = Prop->ContainerPtrToValuePtr<void>(SuperCDO);
 
@@ -255,6 +262,11 @@ FBlueprintAuditData FBlueprintGraphAuditor::GatherBlueprintData(const UBlueprint
 					}
 
 					if (Prop->HasAnyPropertyFlags(CPF_Transient))
+					{
+						continue;
+					}
+
+					if (FathomAuditHelpers::HasBrokenTypeMetadata(Prop))
 					{
 						continue;
 					}

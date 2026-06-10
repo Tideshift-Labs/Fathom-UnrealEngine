@@ -5,39 +5,6 @@
 #include "StructUtils/UserDefinedStruct.h"
 #include "UObject/UnrealType.h"
 
-/**
- * Recursively checks whether a property (or its inner properties in containers)
- * is an FSoftClassProperty whose MetaClass is null. UE asserts when
- * ExportTextItem_Direct is called on such a property, so we skip it.
- */
-static bool HasInvalidSoftClassMeta(const FProperty* Prop)
-{
-	if (const FSoftClassProperty* SCP = CastField<FSoftClassProperty>(Prop))
-	{
-		return SCP->MetaClass == nullptr;
-	}
-	if (const FArrayProperty* AP = CastField<FArrayProperty>(Prop))
-	{
-		return HasInvalidSoftClassMeta(AP->Inner);
-	}
-	if (const FSetProperty* SP = CastField<FSetProperty>(Prop))
-	{
-		return HasInvalidSoftClassMeta(SP->ElementProp);
-	}
-	if (const FMapProperty* MP = CastField<FMapProperty>(Prop))
-	{
-		return HasInvalidSoftClassMeta(MP->KeyProp) || HasInvalidSoftClassMeta(MP->ValueProp);
-	}
-	if (const FStructProperty* StructProp = CastField<FStructProperty>(Prop))
-	{
-		for (TFieldIterator<FProperty> It(StructProp->Struct); It; ++It)
-		{
-			if (HasInvalidSoftClassMeta(*It)) return true;
-		}
-	}
-	return false;
-}
-
 FUserDefinedStructAuditData FUserDefinedStructAuditor::GatherData(const UUserDefinedStruct* Struct)
 {
 	FUserDefinedStructAuditData Data;
@@ -73,14 +40,17 @@ FUserDefinedStructAuditData FUserDefinedStructAuditor::GatherData(const UUserDef
 			Field.Name = Prop->GetName();
 		}
 
+		// HasBrokenTypeMetadata covers fields whose type asset (class, enum,
+		// struct) was deleted; GetCPPType and ExportTextItem_Direct both
+		// assert or dereference null on those.
+		const bool bBrokenMetadata = FathomAuditHelpers::HasBrokenTypeMetadata(Prop);
+
 		FString ExtendedType;
-		Field.Type = Prop->GetCPPType(&ExtendedType);
+		Field.Type = bBrokenMetadata ? TEXT("Unknown") : Prop->GetCPPType(&ExtendedType);
 		Field.Type += ExtendedType;
 
 		// Export default value from the initialized buffer.
-		// Skip properties with invalid FSoftClassProperty metadata to avoid
-		// an assert inside ExportTextItem_Direct (UE5 PropertySoftClassPtr.cpp:57).
-		if (DefaultBuffer && !HasInvalidSoftClassMeta(Prop))
+		if (DefaultBuffer && !bBrokenMetadata)
 		{
 			const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(DefaultBuffer);
 			Prop->ExportTextItem_Direct(Field.DefaultValue, ValuePtr, nullptr, nullptr, PPF_None);

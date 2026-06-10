@@ -125,6 +125,11 @@ static TArray<FPropertyOverrideData> GatherNodeProperties(const UBTNode* Node, c
 		if (Prop->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated))
 			continue;
 
+		// Skip properties whose backing type asset was deleted; exporting
+		// them asserts or dereferences null inside the engine.
+		if (FathomAuditHelpers::HasBrokenTypeMetadata(Prop))
+			continue;
+
 		// Skip inline edit condition toggles (they're just bool flags for conditional visibility)
 		if (Prop->HasMetaData(TEXT("InlineEditConditionToggle")))
 			continue;
@@ -243,7 +248,7 @@ static FString BuildDecoratorLogicString(
 // Recursive tree walk
 // ---------------------------------------------------------------------------
 
-static FBTNodeAuditData GatherCompositeNodeData(const UBTCompositeNode* Composite);
+static FBTNodeAuditData GatherCompositeNodeData(const UBTCompositeNode* Composite, TSet<const UBTNode*>& Visited);
 
 static FBTNodeAuditData GatherTaskNodeData(const UBTTaskNode* Task)
 {
@@ -262,10 +267,20 @@ static FBTNodeAuditData GatherTaskNodeData(const UBTTaskNode* Task)
 	return Data;
 }
 
-static FBTNodeAuditData GatherCompositeNodeData(const UBTCompositeNode* Composite)
+static FBTNodeAuditData GatherCompositeNodeData(const UBTCompositeNode* Composite, TSet<const UBTNode*>& Visited)
 {
 	FBTNodeAuditData Data;
 	Data.ClassName = GetShortNodeClassName(Composite);
+
+	// Guard against cyclic child references (corrupted assets); a well-formed
+	// behavior tree is acyclic.
+	bool bAlreadyVisited = false;
+	Visited.Add(Composite, &bAlreadyVisited);
+	if (bAlreadyVisited)
+	{
+		Data.Type = TEXT("Cycle");
+		return Data;
+	}
 
 	// Determine composite type
 	if (const auto* SP = Cast<UBTComposite_SimpleParallel>(Composite))
@@ -302,7 +317,7 @@ static FBTNodeAuditData GatherCompositeNodeData(const UBTCompositeNode* Composit
 		FBTNodeAuditData ChildData;
 		if (Child.ChildComposite)
 		{
-			ChildData = GatherCompositeNodeData(Child.ChildComposite);
+			ChildData = GatherCompositeNodeData(Child.ChildComposite, Visited);
 		}
 		else if (Child.ChildTask)
 		{
@@ -333,14 +348,20 @@ static FBTNodeAuditData GatherCompositeNodeData(const UBTCompositeNode* Composit
 // Blackboard extraction
 // ---------------------------------------------------------------------------
 
-static void GatherBlackboardKeys(const UBlackboardData* BBData, TArray<FBlackboardKeyAuditData>& OutKeys, bool bInherited)
+static void GatherBlackboardKeys(const UBlackboardData* BBData, TArray<FBlackboardKeyAuditData>& OutKeys, bool bInherited,
+	TSet<const UBlackboardData*>& Visited)
 {
 	if (!BBData) return;
+
+	// Guard against cyclic parent chains (corrupted assets)
+	bool bAlreadyVisited = false;
+	Visited.Add(BBData, &bAlreadyVisited);
+	if (bAlreadyVisited) return;
 
 	// Walk parent chain first
 	if (BBData->Parent)
 	{
-		GatherBlackboardKeys(BBData->Parent, OutKeys, true);
+		GatherBlackboardKeys(BBData->Parent, OutKeys, true, Visited);
 	}
 
 	for (const FBlackboardEntry& Entry : BBData->Keys)
@@ -372,13 +393,15 @@ FBehaviorTreeAuditData FBehaviorTreeAuditor::GatherData(const UBehaviorTree* BT)
 	{
 		Data.BlackboardAssetName = BB->GetName();
 		Data.BlackboardAssetPath = BB->GetPathName();
-		GatherBlackboardKeys(BB, Data.BlackboardKeys, false);
+		TSet<const UBlackboardData*> VisitedBlackboards;
+		GatherBlackboardKeys(BB, Data.BlackboardKeys, false, VisitedBlackboards);
 	}
 
 	// Tree structure
 	if (BT->RootNode)
 	{
-		Data.RootNode = GatherCompositeNodeData(BT->RootNode);
+		TSet<const UBTNode*> VisitedNodes;
+		Data.RootNode = GatherCompositeNodeData(BT->RootNode, VisitedNodes);
 
 		// Root-level decorators (apply to entire tree, used by subtrees)
 		for (const auto& Dec : BT->RootDecorators)

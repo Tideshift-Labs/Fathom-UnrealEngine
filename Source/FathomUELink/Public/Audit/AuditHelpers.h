@@ -28,6 +28,22 @@ namespace FathomAuditHelpers
 	FATHOMUELINK_API FString StripObjectPathToAssetName(const FString& Raw);
 
 	/**
+	 * True when the property references reflection metadata that no longer
+	 * exists (e.g. a TSubclassOf/TSoftClassPtr/enum/struct whose backing asset
+	 * was deleted, leaving MetaClass/Enum/Struct null). The engine's
+	 * GetCPPType, ExportTextItem, and Identical implementations check() or
+	 * dereference these unguarded, so such properties must be skipped.
+	 * Recurses into container inner properties and struct fields.
+	 */
+	FATHOMUELINK_API bool HasBrokenTypeMetadata(const FProperty* Prop);
+
+	/**
+	 * GetCPPType that returns "Unknown" instead of crashing when the
+	 * property's type metadata is broken (see HasBrokenTypeMetadata).
+	 */
+	FATHOMUELINK_API FString GetSafeCPPType(const FProperty* Prop, FString* ExtendedTypeText = nullptr);
+
+	/**
 	 * Format a property value for Markdown output, recursing into structs,
 	 * arrays, sets, maps, and dynamic-schema wrappers (FInstancedStruct and
 	 * FInstancedPropertyBag). The dynamic wrappers are unwrapped to their

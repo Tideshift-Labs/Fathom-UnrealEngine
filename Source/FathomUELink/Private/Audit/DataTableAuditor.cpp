@@ -21,13 +21,14 @@ FDataTableAuditData FDataTableAuditor::GatherData(const UDataTable* DataTable)
 		Data.RowStructName = RowStruct->GetName();
 		Data.RowStructPath = RowStruct->GetPathName();
 
-		// Column schema from struct properties
+		// Column schema from struct properties. GetSafeCPPType avoids the
+		// engine check()/null-deref on columns whose type asset was deleted.
 		for (TFieldIterator<FProperty> PropIt(RowStruct); PropIt; ++PropIt)
 		{
 			FDataTableColumnDef Col;
 			Col.Name = PropIt->GetName();
 			FString ExtendedType;
-			Col.Type = PropIt->GetCPPType(&ExtendedType);
+			Col.Type = FathomAuditHelpers::GetSafeCPPType(*PropIt, &ExtendedType);
 			Col.Type += ExtendedType;
 			Data.Columns.Add(MoveTemp(Col));
 		}
@@ -47,9 +48,18 @@ FDataTableAuditData FDataTableAuditor::GatherData(const UDataTable* DataTable)
 			for (TFieldIterator<FProperty> PropIt(RowStruct); PropIt; ++PropIt)
 			{
 				const FProperty* Prop = *PropIt;
-				const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Pair.Value);
 				FString ValueStr;
-				Prop->ExportTextItem_Direct(ValueStr, ValuePtr, nullptr, nullptr, PPF_None);
+				// Placeholder (not a skip) so values stay aligned with the
+				// numbered column legend.
+				if (FathomAuditHelpers::HasBrokenTypeMetadata(Prop))
+				{
+					ValueStr = TEXT("(unavailable)");
+				}
+				else
+				{
+					const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Pair.Value);
+					Prop->ExportTextItem_Direct(ValueStr, ValuePtr, nullptr, nullptr, PPF_None);
+				}
 				RowData.Values.Add(MoveTemp(ValueStr));
 			}
 		}

@@ -220,6 +220,11 @@ static TArray<FPropertyOverrideData> GatherStructProperties(const FInstancedStru
 		if (SkipNames.Contains(Prop->GetName()))
 			continue;
 
+		// Skip properties whose backing type asset was deleted; exporting
+		// them asserts or dereferences null inside the engine.
+		if (FathomAuditHelpers::HasBrokenTypeMetadata(Prop))
+			continue;
+
 		const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(StructMemory);
 		FString Value = FathomAuditHelpers::FormatPropertyValue(Prop, ValuePtr, /*IndentDepth=*/0);
 		Value = ResolveEnumDisplayName(Prop, Value);
@@ -271,6 +276,9 @@ static TArray<FPropertyOverrideData> GatherObjectProperties(const UObject* Objec
 		if (SkipNames.Contains(Prop->GetName()))
 			continue;
 
+		if (FathomAuditHelpers::HasBrokenTypeMetadata(Prop))
+			continue;
+
 		const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Object);
 		FString Value = FathomAuditHelpers::FormatPropertyValue(Prop, ValuePtr, /*IndentDepth=*/0);
 		Value = ResolveEnumDisplayName(Prop, Value);
@@ -303,9 +311,15 @@ static void AddEditorNodesToMap(TMap<FGuid, FString>& Map, const TArray<FStateTr
 	}
 }
 
-static void AddStateNodesToMap(TMap<FGuid, FString>& Map, const UStateTreeState* State)
+static void AddStateNodesToMap(TMap<FGuid, FString>& Map, const UStateTreeState* State, TSet<const UStateTreeState*>& Visited)
 {
 	if (!State) return;
+
+	// Guard against cyclic child references (corrupted assets); a well-formed
+	// state hierarchy is acyclic.
+	bool bAlreadyVisited = false;
+	Visited.Add(State, &bAlreadyVisited);
+	if (bAlreadyVisited) return;
 
 	AddEditorNodesToMap(Map, State->Tasks);
 	if (State->SingleTask.Node.IsValid())
@@ -322,7 +336,7 @@ static void AddStateNodesToMap(TMap<FGuid, FString>& Map, const UStateTreeState*
 
 	for (const UStateTreeState* Child : State->Children)
 	{
-		AddStateNodesToMap(Map, Child);
+		AddStateNodesToMap(Map, Child, Visited);
 	}
 }
 
@@ -336,9 +350,10 @@ static TMap<FGuid, FString> BuildBindableStructNameMap(const UStateTreeEditorDat
 	AddEditorNodesToMap(Map, EditorData->GlobalTasks);
 
 	// All state-level nodes (recursive)
+	TSet<const UStateTreeState*> Visited;
 	for (const UStateTreeState* SubTree : EditorData->SubTrees)
 	{
-		AddStateNodesToMap(Map, SubTree);
+		AddStateNodesToMap(Map, SubTree, Visited);
 	}
 
 	return Map;
@@ -364,6 +379,8 @@ static TArray<FStateTreePropertyBindingAuditData> GatherNodeBindings(
 
 	for (const FPropertyBindingBinding* Binding : Bindings)
 	{
+		if (!Binding) continue;
+
 		const FPropertyBindingPath& SourcePath = Binding->GetSourcePath();
 		const FPropertyBindingPath& TargetPath = Binding->GetTargetPath();
 
@@ -536,10 +553,21 @@ static FStateTreeTransitionAuditData GatherTransitionData(
 static FStateTreeStateAuditData GatherStateData(
 	const UStateTreeState* State,
 	const UStateTreeEditorData* EditorData,
-	const TMap<FGuid, FString>& BindableNames)
+	const TMap<FGuid, FString>& BindableNames,
+	TSet<const UStateTreeState*>& Visited)
 {
 	FStateTreeStateAuditData StateData;
 	if (!State) return StateData;
+
+	// Guard against cyclic child references (corrupted assets)
+	bool bAlreadyVisited = false;
+	Visited.Add(State, &bAlreadyVisited);
+	if (bAlreadyVisited)
+	{
+		StateData.Name = State->Name.ToString();
+		StateData.Type = TEXT("Cycle");
+		return StateData;
+	}
 
 	StateData.Name = State->Name.ToString();
 	StateData.Type = StateTypeToString(State->Type);
@@ -609,6 +637,11 @@ static FStateTreeStateAuditData GatherStateData(
 					// Only include overridden parameters
 					const FPropertyBagPropertyDesc* Desc = Params.FindPropertyDescByName(Prop->GetFName());
 					if (!Desc || !State->IsParametersPropertyOverridden(Desc->ID))
+					{
+						continue;
+					}
+
+					if (FathomAuditHelpers::HasBrokenTypeMetadata(Prop))
 					{
 						continue;
 					}
@@ -683,7 +716,7 @@ static FStateTreeStateAuditData GatherStateData(
 	// Children (recursive)
 	for (const UStateTreeState* Child : State->Children)
 	{
-		StateData.Children.Add(GatherStateData(Child, EditorData, BindableNames));
+		StateData.Children.Add(GatherStateData(Child, EditorData, BindableNames, Visited));
 	}
 
 	return StateData;
@@ -736,9 +769,10 @@ FStateTreeAuditData FStateTreeAuditor::GatherData(const UStateTree* ST)
 	if (Data.GlobalTasks.Num() > 0) Data.GlobalTasks[0].bIsFirstInList = true;
 
 	// Sub-trees (root states)
+	TSet<const UStateTreeState*> VisitedStates;
 	for (const UStateTreeState* SubTree : EditorData->SubTrees)
 	{
-		Data.SubTrees.Add(GatherStateData(SubTree, EditorData, BindableNames));
+		Data.SubTrees.Add(GatherStateData(SubTree, EditorData, BindableNames, VisitedStates));
 	}
 #endif
 

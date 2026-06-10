@@ -38,7 +38,16 @@ namespace
 		TArray<URigVMPin*> Result;
 		for (URigVMPin* Linked : Pin->GetLinkedTargetPins())
 		{
+			// Corrupted graphs can hold null or orphaned pin links
+			if (!Linked)
+			{
+				continue;
+			}
 			URigVMNode* Owner = Linked->GetNode();
+			if (!Owner)
+			{
+				continue;
+			}
 			if (URigVMRerouteNode* Reroute = Cast<URigVMRerouteNode>(Owner))
 			{
 				bool bAlreadyVisited = false;
@@ -149,6 +158,7 @@ FControlRigAuditData FControlRigAuditor::GatherData(const UControlRigBlueprint* 
 				// Extract input parameters from the entry node's pins
 				for (URigVMPin* Pin : Node->GetPins())
 				{
+					if (!Pin) continue;
 					if (Pin->GetDirection() == ERigVMPinDirection::Output && Pin->GetCPPType() != TEXT("FRigVMExecuteContext"))
 					{
 						FGraphParamData Param;
@@ -165,6 +175,7 @@ FControlRigAuditData FControlRigAuditor::GatherData(const UControlRigBlueprint* 
 				// Extract output parameters from the return node's pins
 				for (URigVMPin* Pin : Node->GetPins())
 				{
+					if (!Pin) continue;
 					if (Pin->GetDirection() == ERigVMPinDirection::Input && Pin->GetCPPType() != TEXT("FRigVMExecuteContext"))
 					{
 						FGraphParamData Param;
@@ -186,6 +197,7 @@ FControlRigAuditData FControlRigAuditor::GatherData(const UControlRigBlueprint* 
 			// Capture top-level pins
 			for (URigVMPin* Pin : Node->GetPins())
 			{
+				if (!Pin) continue;
 				FRigVMPinAuditData PinData;
 				PinData.Name = Pin->GetName();
 				PinData.CPPType = Pin->GetCPPType();
@@ -205,6 +217,7 @@ FControlRigAuditData FControlRigAuditor::GatherData(const UControlRigBlueprint* 
 
 			for (URigVMPin* Pin : Node->GetPins())
 			{
+				if (!Pin) continue;
 				if (Pin->GetDirection() != ERigVMPinDirection::Output
 					&& Pin->GetDirection() != ERigVMPinDirection::IO)
 				{

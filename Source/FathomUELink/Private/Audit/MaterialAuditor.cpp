@@ -36,6 +36,13 @@ namespace
 				continue;
 			}
 
+			// Skip properties whose backing type asset was deleted; exporting
+			// them asserts or dereferences null inside the engine.
+			if (FathomAuditHelpers::HasBrokenTypeMetadata(Prop))
+			{
+				continue;
+			}
+
 			const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Object);
 			FString Value = FathomAuditHelpers::FormatPropertyValue(Prop, ValuePtr, /*IndentDepth=*/0);
 

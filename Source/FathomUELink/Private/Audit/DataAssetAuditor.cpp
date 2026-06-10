@@ -41,6 +41,13 @@ FDataAssetAuditData FDataAssetAuditor::GatherData(const UDataAsset* Asset)
 				continue;
 			}
 
+			// Identical/ExportText crash on properties whose backing type
+			// asset (class, enum, struct) was deleted.
+			if (FathomAuditHelpers::HasBrokenTypeMetadata(Prop))
+			{
+				continue;
+			}
+
 			const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Asset);
 			const void* DefaultPtr = Prop->ContainerPtrToValuePtr<void>(CDO);
 
