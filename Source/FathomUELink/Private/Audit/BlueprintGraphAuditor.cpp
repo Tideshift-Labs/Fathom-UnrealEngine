@@ -51,7 +51,17 @@ namespace
 		TArray<UEdGraphPin*> Result;
 		for (UEdGraphPin* Linked : Pin->LinkedTo)
 		{
-			UEdGraphNode* Owner = Linked->GetOwningNode();
+			// Corrupted/partially-loaded graphs can hold null or orphaned
+			// pin links. GetOwningNode() would check()-fail on a null owner.
+			if (!Linked)
+			{
+				continue;
+			}
+			UEdGraphNode* Owner = Linked->GetOwningNodeUnchecked();
+			if (!Owner)
+			{
+				continue;
+			}
 			if (UK2Node_Knot* Knot = Cast<UK2Node_Knot>(Owner))
 			{
 				// Guard against cyclic knot chains (corrupted graphs)
@@ -65,7 +75,7 @@ namespace
 				// Recurse from the knot's same-direction pin to continue downstream.
 				for (UEdGraphPin* KnotPin : Knot->Pins)
 				{
-					if (KnotPin->Direction != Pin->Direction)
+					if (!KnotPin || KnotPin->Direction != Pin->Direction)
 					{
 						continue;
 					}
@@ -85,7 +95,7 @@ namespace
 	{
 		for (const UEdGraphPin* Pin : Node->Pins)
 		{
-			if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
+			if (Pin && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
 			{
 				return false;
 			}
@@ -296,6 +306,7 @@ FBlueprintAuditData FBlueprintGraphAuditor::GatherBlueprintData(const UBlueprint
 	Data.EventGraphs.Reserve(BP->UbergraphPages.Num());
 	for (UEdGraph* Graph : BP->UbergraphPages)
 	{
+		if (!Graph) continue;
 		Data.EventGraphs.Add(GatherGraphData(Graph));
 	}
 
@@ -303,6 +314,7 @@ FBlueprintAuditData FBlueprintGraphAuditor::GatherBlueprintData(const UBlueprint
 	Data.FunctionGraphs.Reserve(BP->FunctionGraphs.Num());
 	for (UEdGraph* Graph : BP->FunctionGraphs)
 	{
+		if (!Graph) continue;
 		Data.FunctionGraphs.Add(GatherGraphData(Graph));
 	}
 
@@ -310,6 +322,7 @@ FBlueprintAuditData FBlueprintGraphAuditor::GatherBlueprintData(const UBlueprint
 	Data.MacroGraphs.Reserve(BP->MacroGraphs.Num());
 	for (UEdGraph* Graph : BP->MacroGraphs)
 	{
+		if (!Graph) continue;
 		Data.MacroGraphs.Add(GatherGraphData(Graph));
 	}
 
@@ -319,6 +332,10 @@ FBlueprintAuditData FBlueprintGraphAuditor::GatherBlueprintData(const UBlueprint
 FGraphAuditData FBlueprintGraphAuditor::GatherGraphData(const UEdGraph* Graph)
 {
 	FGraphAuditData Data;
+	if (!Graph)
+	{
+		return Data;
+	}
 	Data.Name = Graph->GetName();
 
 	// ---- Pass 1: Build node list ----
@@ -329,8 +346,8 @@ FGraphAuditData FBlueprintGraphAuditor::GatherGraphData(const UEdGraph* Graph)
 
 	for (UEdGraphNode* Node : Graph->Nodes)
 	{
-		// Skip reroute/knot nodes entirely
-		if (Cast<UK2Node_Knot>(Node))
+		// Skip null entries (corrupted graphs) and reroute/knot nodes
+		if (!Node || Cast<UK2Node_Knot>(Node))
 		{
 			continue;
 		}
@@ -352,6 +369,7 @@ FGraphAuditData FBlueprintGraphAuditor::GatherGraphData(const UEdGraph* Graph)
 			// Extract function input parameters from the entry node's output pins
 			for (const UEdGraphPin* Pin : Node->Pins)
 			{
+				if (!Pin) continue;
 				if (Pin->Direction != EGPD_Output) continue;
 				if (Pin->bHidden) continue;
 				if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
@@ -373,6 +391,7 @@ FGraphAuditData FBlueprintGraphAuditor::GatherGraphData(const UEdGraph* Graph)
 			{
 				for (const UEdGraphPin* Pin : Node->Pins)
 				{
+					if (!Pin) continue;
 					if (Pin->Direction != EGPD_Input) continue;
 					if (Pin->bHidden) continue;
 					if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
@@ -469,6 +488,7 @@ FGraphAuditData FBlueprintGraphAuditor::GatherGraphData(const UEdGraph* Graph)
 		// Capture default values for unconnected input pins (all node types)
 		for (const UEdGraphPin* Pin : Node->Pins)
 		{
+			if (!Pin) continue;
 			if (Pin->Direction != EGPD_Input) continue;
 			if (Pin->bHidden) continue;
 			if (Pin->LinkedTo.Num() > 0) continue;
@@ -535,6 +555,7 @@ FGraphAuditData FBlueprintGraphAuditor::GatherGraphData(const UEdGraph* Graph)
 
 		for (const UEdGraphPin* Pin : Node->Pins)
 		{
+			if (!Pin) continue;
 			if (Pin->Direction != EGPD_Output) continue;
 			if (Pin->bHidden) continue;
 			if (Pin->LinkedTo.Num() == 0) continue;
@@ -548,7 +569,8 @@ FGraphAuditData FBlueprintGraphAuditor::GatherGraphData(const UEdGraph* Graph)
 
 			for (UEdGraphPin* TargetPin : ResolvedPins)
 			{
-				UEdGraphNode* TargetNode = TargetPin->GetOwningNode();
+				UEdGraphNode* TargetNode = TargetPin->GetOwningNodeUnchecked();
+				if (!TargetNode) continue;
 				const int32* TargetIdPtr = NodeIdMap.Find(TargetNode);
 				if (!TargetIdPtr) continue;
 
